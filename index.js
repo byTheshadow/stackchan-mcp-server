@@ -5,8 +5,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import edgeTTSPkg from 'edge-tts-node';
-const { EdgeTTS } = edgeTTSPkg;
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,20 +41,29 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Edge-TTS 免费语音生成
+// 免费 Edge-TTS 语音生成函数
 async function generateTTS(text, voice = 'zh-CN-XiaoxiaoNeural') {
   const fileName = `tts_${Date.now()}.mp3`;
   const filePath = path.join(AUDIO_DIR, fileName);
-  const tts = new EdgeTTS({ voice: voice, lang: 'zh-CN' });
-  await tts.ttsToFile(text, filePath);
-  return `/audio/${fileName}`;
+  
+  const tts = new MsEdgeTTS();
+  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  
+  const readable = tts.toStream(text);
+  const writable = fs.createWriteStream(filePath);
+
+  return new Promise((resolve, reject) => {
+    readable.pipe(writable);
+    writable.on('finish', () => resolve(`/audio/${fileName}`));
+    writable.on('error', (err) => reject(err));
+  });
 }
 
 // ==========================================
 // MCP 协议标准端点
 // ==========================================
 
-// 1. 获取机器人支持的工具列表
+// 1. 获取工具列表
 app.get('/mcp/tools', (req, res) => {
   res.json({
     tools: [
@@ -93,10 +101,13 @@ app.post('/mcp/call', async (req, res) => {
 
   if (tool === 'control_robot') {
     try {
+      console.log('🤖 正在为机器人生成语音:', args.text_to_speak);
       // 1. 生成语音音频
       const audioPath = await generateTTS(args.text_to_speak);
       const hostUrl = `${req.protocol}://${req.get('host')}`;
       const fullAudioUrl = `${hostUrl}${audioPath}`;
+
+      console.log('🔊 音频生成成功:', fullAudioUrl);
 
       // 2. 组装给机器人的指令
       const payload = {
@@ -119,11 +130,12 @@ app.post('/mcp/call', async (req, res) => {
             type: "text",
             text: delivered 
               ? `[实体机器人] 成功以 ${args.expression} 表情做出 ${args.motion || 'nod'} 动作并朗读了台词。`
-              : `[实体机器人] 指令已生成，但机器人当前未在线。`
+              : `[实体机器人] 语音已生成，但机器人当前未在线。`
           }
         ]
       });
     } catch (err) {
+      console.error('TTS 生成失败:', err);
       res.status(500).json({ error: err.message });
     }
   } else {
@@ -140,4 +152,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-
