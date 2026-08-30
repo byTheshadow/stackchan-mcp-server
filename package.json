@@ -8,9 +8,8 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "edge-tts": "^0.1.3",
     "express": "^4.19.2",
-    "msedge-tts": "^1.2.0",
     "ws": "^8.18.0"
   }
 }
-
