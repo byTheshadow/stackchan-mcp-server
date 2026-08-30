@@ -11,18 +11,16 @@ app.use(express.json({ limit: '64kb' }));
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// 当前连接的机器人。
-// 注意：目前只做单机器人测试；以后可扩展为多机器人。
+// 当前在线的机器人连接。
+// 目前仅支持一台机器人；以后可以用 robot_id 扩展多台。
 let robotSocket = null;
 
-wss.on('connection', (ws, request) => {
-  const ip = request.socket.remoteAddress;
-  console.log(`✅ StackChan 机器人已连接：${ip}`);
-
+wss.on('connection', (ws, req) => {
+  console.log(`✅ StackChan 机器人已连接：${req.socket.remoteAddress}`);
   robotSocket = ws;
 
   ws.on('message', (message) => {
-    console.log('📨 收到机器人消息：', message.toString());
+    console.log('机器人上报：', message.toString());
   });
 
   ws.on('close', () => {
@@ -33,65 +31,40 @@ wss.on('connection', (ws, request) => {
   });
 
   ws.on('error', (error) => {
-    console.error('机器人 WebSocket 出错：', error.message);
+    console.error('机器人 WebSocket 错误：', error.message);
   });
 });
 
-function isRobotOnline() {
-  return robotSocket && robotSocket.readyState === 1;
-}
-
-function sendToRobot(payload) {
-  if (!isRobotOnline()) {
-    return false;
-  }
-
-  robotSocket.send(JSON.stringify(payload));
-  console.log('➡️ 已下发给机器人：', payload);
-  return true;
-}
-
-/**
- * 状态检查：
- * 浏览器打开 https://你的服务.onrender.com/status
- * 可查看机器人是否在线。
- */
-app.get('/status', (req, res) => {
-  res.json({
-    ok: true,
-    robot_online: isRobotOnline()
-  });
+// 健康检查：在浏览器打开 Render 根网址时会看到这个响应。
+app.get('/', (req, res) => {
+  res.type('text').send('StackChan relay server is running.');
 });
 
-/**
- * 临时的自定义工具描述接口。
- *
- * 注意：
- * 这还不是“标准 MCP Streamable HTTP”协议；
- * 它是我们先用于验证硬件链路的简单 REST 接口。
- */
+// 目前对外提供的“工具说明”。
+// 注意：这只是临时 JSON 接口，还不是完整标准的 MCP Streamable HTTP 协议。
+// 我们在硬件功能验证完成后，再根据你的 PWA 的 MCP 接入方式改为标准协议。
 app.get('/mcp/tools', (req, res) => {
   res.json({
     tools: [
       {
         name: 'control_robot',
-        description: '控制现实中的 StackChan 机器人切换表情。当前测试版暂不含语音和舵机动作。',
-        parameters: {
+        description: '控制 StackChan 的表情和动作。当前固件阶段仅验证表情；语音和舵机动作将在后续单独实现。',
+        inputSchema: {
           type: 'object',
           properties: {
             expression: {
               type: 'string',
               enum: ['happy', 'sad', 'angry', 'doubt', 'sleepy', 'neutral'],
-              description: '机器人的表情。'
-            },
-            text_to_speak: {
-              type: 'string',
-              description: '预留的未来语音文本字段。当前版本仅记录文本，不会朗读。'
+              description: '表情名称'
             },
             motion: {
               type: 'string',
               enum: ['nod', 'shake', 'tilt', 'none'],
-              description: '预留的未来动作字段。当前固件尚未实现舵机动作。'
+              description: '动作名称；当前固件尚未实现舵机动作，仅会原样接收。'
+            },
+            text_to_speak: {
+              type: 'string',
+              description: '未来给 TTS 使用的文本；当前阶段不会播放。'
             }
           },
           required: ['expression']
@@ -101,61 +74,51 @@ app.get('/mcp/tools', (req, res) => {
   });
 });
 
-/**
- * 控制机器人。
- * 当前实现：只改变表情。
- */
+// 临时控制接口：把安全、简单的 JSON 指令经 WebSocket 转给机器人。
 app.post('/mcp/call', (req, res) => {
-  const { tool, arguments: args = {} } = req.body;
+  const { tool, arguments: args = {} } = req.body ?? {};
 
   if (tool !== 'control_robot') {
-    return res.status(404).json({
-      error: 'Tool not found'
-    });
+    return res.status(404).json({ error: 'Tool not found' });
   }
 
-  const allowedExpressions = [
-    'happy',
-    'sad',
-    'angry',
-    'doubt',
-    'sleepy',
-    'neutral'
-  ];
+  const allowedExpressions = ['happy', 'sad', 'angry', 'doubt', 'sleepy', 'neutral'];
+  const allowedMotions = ['nod', 'shake', 'tilt', 'none'];
 
   const expression = allowedExpressions.includes(args.expression)
     ? args.expression
     : 'neutral';
 
-  // 保持 action 为 speak，是为了兼容你现在机器人端已经烧录的固件：
-  // 它会根据 expression 切表情；
-  // audio_url 留空，因此不会触发音频播放。
-  const delivered = sendToRobot({
+  const motion = allowedMotions.includes(args.motion)
+    ? args.motion
+    : 'none';
+
+  if (!robotSocket || robotSocket.readyState !== 1) {
+    return res.status(503).json({
+      error: 'Robot is offline. Please check Wi-Fi and WebSocket connection.'
+    });
+  }
+
+  // 此阶段不要发送 audio_url：
+  // 因为我们尚未选定并接入可靠的 TTS 服务。
+  const payload = {
     action: 'speak',
     expression,
-    audio_url: '',
-    motion: args.motion || 'none',
-    text: args.text_to_speak || ''
-  });
+    motion,
+    text: typeof args.text_to_speak === 'string' ? args.text_to_speak : ''
+  };
 
-  res.json({
-    success: true,
-    robot_online: delivered,
+  robotSocket.send(JSON.stringify(payload));
+  console.log('➡️ 已发送至机器人：', payload);
+
+  return res.json({
     content: [
       {
         type: 'text',
-        text: delivered
-          ? `机器人已切换为 ${expression} 表情。`
-          : '指令已收到，但机器人目前不在线。'
+        text: `已发送机器人指令：expression=${expression}, motion=${motion}`
       }
     ]
   });
-});
-
-app.get('/', (req, res) => {
-  res.type('text').send(
-    'StackChan relay server is running. Visit /status to check robot connection.'
-  );
 });
 
 const PORT = process.env.PORT || 3000;
@@ -163,4 +126,5 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
 
