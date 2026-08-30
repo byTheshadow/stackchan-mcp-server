@@ -23,29 +23,27 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // 1. 初始化 M5 硬件（统一屏幕与底层总线）
-  auto cfg = M5.config();
-  M5.begin(cfg);
+  // 1. 由 M5StackChan 完成所有底层硬件（IO、供电、舵机）的初始化
+  M5StackChan.begin();
 
-  // 2. 单独初始化舵机运动总线与供电，避免 M5StackChan.begin() 抢占屏幕
-  M5StackChan.Motion.begin();
+  // 2. 舵机安全配置
   M5StackChan.Motion.setAutoAngleSyncEnabled(false);
   M5StackChan.Motion.setAutoTorqueReleaseEnabled(true);
 
-  // 3. 启动 M5-Avatar 表情系统
+  // 3. 舵机回中
+  M5StackChan.Motion.goHome(500);
+
+  // 4. 初始化 Avatar 表情
   avatar.init();
   avatar.setExpression(Expression::Neutral);
 
-  // 4. 舵机回中
-  M5StackChan.Motion.goHome(500);
-
   nextStepAt = millis() + 1500;
-  Serial.println("[TEST] Setup complete. Awaiting nod gesture.");
+  Serial.println("[TEST] Setup finished. Preparing gesture...");
 }
 
 void loop() {
-  M5.update();
-  M5StackChan.Motion.update();
+  // 注意：只调用 M5StackChan.update()，它会自行调度内部逻辑
+  M5StackChan.update();
 
   const unsigned long now = millis();
   if (now < nextStepAt) {
