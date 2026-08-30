@@ -40,12 +40,13 @@ jobs:
 
       - name: Compile Sketch
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi firmware/firmware.ino --output-dir build
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=huge_app,PSRAM=opi firmware/firmware.ino --output-dir build
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: stackchan-cores3-firmware
           path: build/*.bin
+
 
 
