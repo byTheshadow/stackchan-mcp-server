@@ -1,0 +1,44 @@
+name: Build StackChan Firmware
+
+on:
+  push:
+    paths:
+      - 'firmware/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          sudo mv bin/arduino-cli /usr/local/bin/
+
+      - name: Setup ESP32 Core
+        run: |
+          arduino-cli config init
+          arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install Libraries
+        run: |
+          arduino-cli lib install "M5Unified"
+          arduino-cli lib install "M5Stack-Avatar"
+          arduino-cli lib install "WebSockets"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "ESP8266Audio"
+          arduino-cli lib install "WiFiManager"
+
+      - name: Compile Sketch
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/firmware.ino --output-dir build
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stackchan-cores3-firmware
+          path: build/*.bin
