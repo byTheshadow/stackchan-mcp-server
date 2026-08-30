@@ -1,52 +1,57 @@
-name: Build StackChan Firmware
+name: Build StackChan Servo Home Test
 
 on:
   push:
     paths:
       - 'firmware/**'
+      - 'platformio.ini'
       - '.github/workflows/**'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - name: Install Arduino CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-          sudo mv bin/arduino-cli /usr/local/bin/
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Setup Board Manager
-        run: |
-          arduino-cli config init
-          arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
 
-      - name: Install Libraries
-        run: |
-          # 安装基础开源库
-          arduino-cli lib install "M5Unified"
-          arduino-cli lib install "ArduinoJson"
-          arduino-cli lib install "WebSockets"
-          arduino-cli lib install "ESP8266Audio"
-          
-          # 拉取 Avatar 和 WiFiManager
-          mkdir -p ~/Arduino/libraries
-          git clone --depth 1 https://github.com/meganetaaan/m5stack-avatar.git ~/Arduino/libraries/M5Stack-Avatar
-          git clone --depth 1 https://github.com/tzapu/WiFiManager.git ~/Arduino/libraries/WiFiManager
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.1.18
 
-      - name: Compile Sketch
-        run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=huge_app,PSRAM=opi firmware/firmware.ino --output-dir build
+      - name: Build servo home test
+        run: pio run -e servo-home-test
 
-      - name: Upload Artifact
+      - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: stackchan-cores3-firmware
-          path: build/*.bin
+          name: stackchan-servo-home-test
+          path: |
+            .pio/build/servo-home-test/firmware.bin
+            .pio/build/servo-home-test/bootloader.bin
+            .pio/build/servo-home-test/partitions.bin
+          if-no-files-found: error
+          retention-days: 14
 
 
 
