@@ -14,7 +14,6 @@ Avatar avatar;
 WebSocketsClient webSocket;
 Preferences prefs;
 
-// 动态存储的服务器域名（不写死在代码中）
 char ws_host[128] = "";
 const int ws_port = 443;
 const char* ws_path = "/";
@@ -38,19 +37,19 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
       deserializeJson(doc, payload);
 
       const char* action = doc["action"];
-      if (strcmp(action, "speak") == 0) {
+      if (action && strcmp(action, "speak") == 0) {
         const char* expr = doc["expression"];
         const char* audio_url = doc["audio_url"];
 
-        // 切换表情
-        if (strcmp(expr, "happy") == 0) avatar.setExpression(Expression::Happy);
-        else if (strcmp(expr, "sad") == 0) avatar.setExpression(Expression::Sad);
-        else if (strcmp(expr, "angry") == 0) avatar.setExpression(Expression::Angry);
-        else if (strcmp(expr, "doubt") == 0) avatar.setExpression(Expression::Doubt);
-        else if (strcmp(expr, "sleepy") == 0) avatar.setExpression(Expression::Sleepy);
-        else avatar.setExpression(Expression::Neutral);
+        if (expr) {
+          if (strcmp(expr, "happy") == 0) avatar.setExpression(Expression::Happy);
+          else if (strcmp(expr, "sad") == 0) avatar.setExpression(Expression::Sad);
+          else if (strcmp(expr, "angry") == 0) avatar.setExpression(Expression::Angry);
+          else if (strcmp(expr, "doubt") == 0) avatar.setExpression(Expression::Doubt);
+          else if (strcmp(expr, "sleepy") == 0) avatar.setExpression(Expression::Sleepy);
+          else avatar.setExpression(Expression::Neutral);
+        }
 
-        // 播放音频
         if (audio_url && strlen(audio_url) > 0) {
           if (mp3->isRunning()) mp3->stop();
           file->open(audio_url);
@@ -68,51 +67,49 @@ void setup() {
   M5.Speaker.setVolume(150);
   Serial.begin(115200);
 
-  // 从芯片内部存储读取之前保存的服务器域名
   prefs.begin("stackchan", false);
   String saved_host = prefs.getString("server_host", "");
   saved_host.toCharArray(ws_host, 128);
 
+  M5.Display.clear();
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-  M5.Display.println("Starting WiFi...");
+  M5.Display.println("WiFi Connecting...");
 
-  // 在配网页面增加自定义输入框：MCP Server
   WiFiManagerParameter custom_server_host("server", "MCP Server Host (e.g. xxx.onrender.com)", ws_host, 128);
-
   WiFiManager wm;
   wm.addParameter(&custom_server_host);
-  wm.setConfigPortalTimeout(0); // 永不超时
+  wm.setConnectTimeout(15); // 连接超时 15 秒，超时自动开热点
 
-  // 开启配网热点
   if (!wm.autoConnect("StackChan-Setup")) {
-    M5.Display.println("Connect to WiFi:");
+    M5.Display.clear();
+    M5.Display.println("WiFi Failed!");
+    M5.Display.println("Connect to AP:");
     M5.Display.println("StackChan-Setup");
-  } else {
-    M5.Display.println("WiFi Connected!");
+    M5.Display.println("192.168.4.1");
+    wm.startConfigPortal("StackChan-Setup");
   }
 
-  // 保存用户在配网页面输入的服务器地址
+  // 保存服务器配置
   if (strlen(custom_server_host.getValue()) > 0) {
     strcpy(ws_host, custom_server_host.getValue());
     prefs.putString("server_host", ws_host);
   }
 
-  delay(1000);
+  M5.Display.clear();
+  M5.Display.println("WiFi OK!");
+  M5.Display.println(WiFi.localIP().toString());
+  delay(1500);
 
-  // 初始化 Avatar 表情系统
   avatar.init();
   avatar.setExpression(Expression::Neutral);
 
-  // 初始化音频播放器
   out = new AudioOutputI2S();
-  out->SetPinout(12, 0, 2); // CoreS3 I2S
+  out->SetPinout(12, 0, 2);
   mp3 = new AudioGeneratorMP3();
   file = new AudioFileSourceHTTPStream();
 
-  // 如果有配置服务器地址，则启动 WebSocket 连接
   if (strlen(ws_host) > 0) {
-    Serial.printf("Connecting to WebSocket: %s\n", ws_host);
     webSocket.beginSSL(ws_host, ws_port, ws_path);
     webSocket.onEvent(webSocketEvent);
     webSocket.setReconnectInterval(5000);
