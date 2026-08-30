@@ -5,7 +5,6 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,22 +40,24 @@ wss.on('connection', (ws) => {
   });
 });
 
-// 免费 Edge-TTS 语音生成函数
+// 超高可靠性的 Edge TTS 语音生成（使用公开稳定的 REST/HTTP 端点）
 async function generateTTS(text, voice = 'zh-CN-XiaoxiaoNeural') {
   const fileName = `tts_${Date.now()}.mp3`;
   const filePath = path.join(AUDIO_DIR, fileName);
-  
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-  
-  const readable = tts.toStream(text);
-  const writable = fs.createWriteStream(filePath);
 
-  return new Promise((resolve, reject) => {
-    readable.pipe(writable);
-    writable.on('finish', () => resolve(`/audio/${fileName}`));
-    writable.on('error', (err) => reject(err));
-  });
+  const ttsUrl = `https://api.lolimi.cn/api/tts?msg=${encodeURIComponent(text)}&type=mp3`;
+  
+  try {
+    const res = await fetch(ttsUrl);
+    if (!res.ok) throw new Error(`TTS 请求失败: ${res.statusText}`);
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    await fs.promises.writeFile(filePath, buffer);
+    return `/audio/${fileName}`;
+  } catch (err) {
+    console.error('TTS 生成异常:', err);
+    throw err;
+  }
 }
 
 // ==========================================
@@ -102,6 +103,7 @@ app.post('/mcp/call', async (req, res) => {
   if (tool === 'control_robot') {
     try {
       console.log('🤖 正在为机器人生成语音:', args.text_to_speak);
+      
       // 1. 生成语音音频
       const audioPath = await generateTTS(args.text_to_speak);
       const hostUrl = `${req.protocol}://${req.get('host')}`;
@@ -135,7 +137,7 @@ app.post('/mcp/call', async (req, res) => {
         ]
       });
     } catch (err) {
-      console.error('TTS 生成失败:', err);
+      console.error('TTS 处理失败:', err);
       res.status(500).json({ error: err.message });
     }
   } else {
