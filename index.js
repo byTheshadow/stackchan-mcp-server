@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
@@ -6,7 +5,8 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { EdgeTTS } from 'edge-tts-node';
+import edgeTTSPkg from 'edge-tts-node';
+const { EdgeTTS } = edgeTTSPkg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -140,3 +140,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
