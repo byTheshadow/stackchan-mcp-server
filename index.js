@@ -59,7 +59,7 @@ app.get('/mcp/tools', (req, res) => {
             },
             motion: {
               type: 'string',
-              enum: ['nod', 'shake', 'tilt', 'none'],
+              enum: ['nod', 'shake', 'tilt', 'home', 'none'],
               description: '动作名称；当前固件尚未实现舵机动作，仅会原样接收。'
             },
             text_to_speak: {
@@ -83,7 +83,8 @@ app.post('/mcp/call', (req, res) => {
   }
 
   const allowedExpressions = ['happy', 'sad', 'angry', 'doubt', 'sleepy', 'neutral'];
-  const allowedMotions = ['nod', 'shake', 'tilt', 'none'];
+ const allowedMotions = ['nod', 'shake', 'tilt', 'home', 'none'];
+
 
   const expression = allowedExpressions.includes(args.expression)
     ? args.expression
