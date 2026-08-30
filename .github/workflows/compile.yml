@@ -27,24 +27,25 @@ jobs:
 
       - name: Install Libraries
         run: |
-          # 安装基础库
+          # 安装基础开源库
           arduino-cli lib install "M5Unified"
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "WebSockets"
           arduino-cli lib install "ESP8266Audio"
           
-          # 直接拉取 Avatar 和 WiFiManager 源码
+          # 拉取 Avatar 和 WiFiManager
           mkdir -p ~/Arduino/libraries
           git clone --depth 1 https://github.com/meganetaaan/m5stack-avatar.git ~/Arduino/libraries/M5Stack-Avatar
           git clone --depth 1 https://github.com/tzapu/WiFiManager.git ~/Arduino/libraries/WiFiManager
 
       - name: Compile Sketch
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi firmware/firmware.ino --output-dir build
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi firmware/firmware.ino --output-dir build
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: stackchan-cores3-firmware
           path: build/*.bin
+
 
