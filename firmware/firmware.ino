@@ -19,42 +19,33 @@ enum NodStep {
 NodStep nodStep = NOD_WAIT;
 unsigned long nextStepAt = 0;
 
-void showStatus(const char* status) {
-  M5.Display.fillRect(0, 205, 320, 35, TFT_BLACK);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.setCursor(8, 214);
-  M5.Display.print(status);
-}
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // 仅由 StackChan-BSP 初始化底层硬件。
-  // 不再额外调用 M5.begin()，避免重复初始化。
-  M5StackChan.begin();
+  // 1. 初始化 M5 硬件（统一屏幕与底层总线）
+  auto cfg = M5.config();
+  M5.begin(cfg);
 
+  // 2. 单独初始化舵机运动总线与供电，避免 M5StackChan.begin() 抢占屏幕
+  M5StackChan.Motion.begin();
   M5StackChan.Motion.setAutoAngleSyncEnabled(false);
   M5StackChan.Motion.setAutoTorqueReleaseEnabled(true);
 
-  // 在 BSP 初始化完成后启动 Avatar 表情。
+  // 3. 启动 M5-Avatar 表情系统
   avatar.init();
   avatar.setExpression(Expression::Neutral);
 
-  showStatus("Avatar + Servo test: homing...");
-
-  // 已在本机验证安全的归位动作。
+  // 4. 舵机回中
   M5StackChan.Motion.goHome(500);
 
-  // 给归位留出时间，然后仅点头一次。
   nextStepAt = millis() + 1500;
-
-  Serial.println("[TEST] Avatar initialized; goHome sent.");
+  Serial.println("[TEST] Setup complete. Awaiting nod gesture.");
 }
 
 void loop() {
-  M5StackChan.update();
+  M5.update();
+  M5StackChan.Motion.update();
 
   const unsigned long now = millis();
   if (now < nextStepAt) {
@@ -65,7 +56,6 @@ void loop() {
   switch (nodStep) {
     case NOD_WAIT:
       avatar.setExpression(Expression::Happy);
-      showStatus("Avatar + Servo test: nodding...");
       M5StackChan.Motion.moveY(300, 500);  // 30.0°
       Serial.println("[TEST] Nod: Y=30.0");
       nodStep = NOD_TO_30;
@@ -89,7 +79,6 @@ void loop() {
     case NOD_TO_30_AGAIN:
       M5StackChan.Motion.goHome(500);
       avatar.setExpression(Expression::Neutral);
-      showStatus("Avatar + Servo test: done / home");
       Serial.println("[TEST] Nod complete; goHome sent.");
       nodStep = NOD_HOME;
       nextStepAt = now + 800;
@@ -101,7 +90,6 @@ void loop() {
       break;
 
     case NOD_DONE:
-      // 后续不再发送运动命令。
       break;
   }
 
