@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'firmware/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -17,7 +18,7 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
 
-      - name: Setup ESP32 Core
+      - name: Setup Board Manager
         run: |
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
@@ -26,19 +27,24 @@ jobs:
 
       - name: Install Libraries
         run: |
+          # 安装基础库
           arduino-cli lib install "M5Unified"
-          arduino-cli lib install "M5Stack-Avatar"
-          arduino-cli lib install "WebSockets"
           arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "WebSockets"
           arduino-cli lib install "ESP8266Audio"
-          arduino-cli lib install "WiFiManager"
+          
+          # 直接拉取 Avatar 和 WiFiManager 源码
+          mkdir -p ~/Arduino/libraries
+          git clone --depth 1 https://github.com/meganetaaan/m5stack-avatar.git ~/Arduino/libraries/M5Stack-Avatar
+          git clone --depth 1 https://github.com/tzapu/WiFiManager.git ~/Arduino/libraries/WiFiManager
 
       - name: Compile Sketch
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/firmware.ino --output-dir build
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi firmware/firmware.ino --output-dir build
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: stackchan-cores3-firmware
           path: build/*.bin
+
