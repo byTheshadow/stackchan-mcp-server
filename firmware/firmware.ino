@@ -823,8 +823,22 @@ void setup() {
    * 从这里开始，不能再直接操作 M5.Display。
    */
   avatar.init();
-  avatar.setExpression(Expression::Neutral);
-  avatar.setSpeechText("");
+
+/*
+ * 让 Avatar 的 Balloon（文字气泡）使用 M5GFX 内置中文点阵字体。
+ *
+ * m5stack-avatar 的 DrawContext.h 已明确标注：
+ *   &fonts::efontCN_10
+ *
+ * 不直接调用 M5.Display.setFont()：
+ * Avatar 已启动独立绘制任务，文字必须继续由 avatar.setSpeechText()
+ * 和 Avatar 自己的气泡绘制流程处理。
+ */
+avatar.setSpeechFont(&fonts::efontCN_10);
+
+avatar.setExpression(Expression::Neutral);
+avatar.setSpeechText("");
+
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WIFI] Not connected; WebSocket will not start");
