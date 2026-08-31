@@ -285,17 +285,39 @@ void sendHeadTouchEvent() {
 
 void updateHeadTouchInput() {
   /*
-   * M5StackChan.update() 已在 loop() 开头调用。
-   * StackChan-BSP 会在其中更新 TouchSensor 状态。
+   * 直接读取 StackChan 头顶三个原始电容感应区：
    *
-   * wasClicked() 是官方 TouchSensor 示例使用的事件 API：
-   * 它代表一次完成的头顶触摸/点击，不会在手指持续按住时持续触发。
+   * intensities[0] = Front
+   * intensities[1] = Middle
+   * intensities[2] = Back
+   *
+   * 每个值：
+   * 0 = 未触摸
+   * 1 ~ 3 = 感应到触摸，数值越大代表强度越高
    */
-  auto& touchSensor = M5StackChan.TouchSensor;
+  const auto& intensities = M5StackChan.TouchSensor.getIntensities();
 
-  if (!touchSensor.wasClicked()) {
+  const bool isTouched =
+    intensities[0] > 0 ||
+    intensities[1] > 0 ||
+    intensities[2] > 0;
+
+  /*
+   * 仅在“从未触摸 → 触摸”的边缘上报一次。
+   * 手指持续放在头顶时不会重复发送。
+   */
+  static bool wasTouched = false;
+
+  if (!isTouched) {
+    wasTouched = false;
     return;
   }
+
+  if (wasTouched) {
+    return;
+  }
+
+  wasTouched = true;
 
   const unsigned long now = millis();
 
@@ -309,9 +331,16 @@ void updateHeadTouchInput() {
 
   lastHeadTouchEventMs = now;
 
-  Serial.println("[HEAD] Clicked");
+  Serial.printf(
+    "[HEAD] Raw touch detected: front=%u, middle=%u, back=%u\n",
+    static_cast<unsigned>(intensities[0]),
+    static_cast<unsigned>(intensities[1]),
+    static_cast<unsigned>(intensities[2])
+  );
+
   sendHeadTouchEvent();
 }
+
 
 
 /*
