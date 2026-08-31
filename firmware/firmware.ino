@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <M5StackChan.h>
@@ -30,9 +31,8 @@ unsigned long nextGestureStepMs = 0;
 /*
  * 屏幕文字状态。
  *
- * 注意：
- * Avatar 启动后，必须通过 avatar.setSpeechText() 显示文字，
- * 不能直接操作 M5.Display，否则可能与 Avatar 的显示任务冲突。
+ * Avatar 启动后，必须通过 avatar.setSpeechText() 显示文字；
+ * 不要直接操作 M5.Display，否则可能与 Avatar 显示任务冲突。
  */
 String activeSpeechText = "";
 bool speechClearScheduled = false;
@@ -41,6 +41,15 @@ unsigned long speechClearAtMs = 0;
 const unsigned long DEFAULT_DISPLAY_DURATION_MS = 5000;
 const unsigned long MIN_DISPLAY_DURATION_MS = 1000;
 const unsigned long MAX_DISPLAY_DURATION_MS = 10000;
+
+/*
+ * 触摸事件防抖。
+ *
+ * 同一次触摸按下只上报一次；
+ * 两次有效触摸事件至少间隔 700ms。
+ */
+const unsigned long TOUCH_EVENT_DEBOUNCE_MS = 700;
+unsigned long lastTouchEventMs = 0;
 
 void showBootMessage(const char* line1, const char* line2 = nullptr) {
   // 只能在 avatar.init() 之前调用。
@@ -59,7 +68,9 @@ void showBootMessage(const char* line1, const char* line2 = nullptr) {
 }
 
 void setExpressionByName(const char* expr) {
-  if (expr == nullptr) return;
+  if (expr == nullptr) {
+    return;
+  }
 
   if (strcmp(expr, "happy") == 0) {
     avatar.setExpression(Expression::Happy);
@@ -100,8 +111,7 @@ void setSpeechTextForDuration(
   avatar.setSpeechText(activeSpeechText.c_str());
 
   /*
-   * 空文字有明确含义：立即清除屏幕文字，
-   * 同时取消之前的自动清除计时。
+   * 空文字表示立即清除，并取消旧的自动清除计时。
    */
   if (activeSpeechText.length() == 0) {
     speechClearScheduled = false;
@@ -129,7 +139,7 @@ void updateSpeechText() {
   const unsigned long now = millis();
 
   /*
-   * 使用有符号差值，能安全处理 millis() 溢出。
+   * 使用有符号差值，能正确处理 millis() 溢出。
    */
   if (static_cast<long>(now - speechClearAtMs) < 0) {
     return;
@@ -158,6 +168,7 @@ void startNod() {
   activeGesture = GESTURE_NOD;
   gestureStep = 0;
   nextGestureStepMs = 0;
+
   Serial.println("[GESTURE] Nod started");
 }
 
@@ -205,6 +216,79 @@ void updateGesture() {
   gestureStep++;
 }
 
+/*
+ * 将触摸事件通过现有 WebSocket 上报至 Render。
+ *
+ * 格式：
+ * {
+ *   "type": "robot_event",
+ *   "event": "touch_tap",
+ *   "x": 160,
+ *   "y": 120,
+ *   "at_ms": 123456
+ * }
+ */
+void sendTouchTapEvent(int32_t x, int32_t y) {
+  if (!webSocket.isConnected()) {
+    Serial.println("[TOUCH] Tap detected, but WebSocket is disconnected");
+    return;
+  }
+
+  StaticJsonDocument<192> eventDoc;
+
+  eventDoc["type"] = "robot_event";
+  eventDoc["event"] = "touch_tap";
+  eventDoc["x"] = x;
+  eventDoc["y"] = y;
+  eventDoc["at_ms"] = millis();
+
+  String eventJson;
+  serializeJson(eventDoc, eventJson);
+
+  webSocket.sendTXT(eventJson);
+
+  Serial.printf(
+    "[TOUCH] touch_tap sent: x=%ld, y=%ld\n",
+    static_cast<long>(x),
+    static_cast<long>(y)
+  );
+}
+
+/*
+ * 检查屏幕的新一次按下。
+ *
+ * M5StackChan.update() 已在 loop() 开头执行，
+ * 所以此处只读取 M5Unified 已更新的触摸状态；
+ * 不额外调用 M5.update()，避免重复更新输入状态。
+ */
+void updateTouchInput() {
+  auto touch = M5.Touch.getDetail();
+
+  if (!touch.wasPressed()) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  if (
+    lastTouchEventMs != 0 &&
+    now - lastTouchEventMs < TOUCH_EVENT_DEBOUNCE_MS
+  ) {
+    Serial.println("[TOUCH] Ignored by debounce");
+    return;
+  }
+
+  lastTouchEventMs = now;
+
+  Serial.printf(
+    "[TOUCH] Pressed: x=%ld, y=%ld\n",
+    static_cast<long>(touch.x),
+    static_cast<long>(touch.y)
+  );
+
+  sendTouchTapEvent(touch.x, touch.y);
+}
+
 void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
@@ -242,13 +326,15 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
       const char* action = doc["action"];
 
       /*
-       * 只有 Render 明确发送 text_to_display 时才更新文字。
-       * 因此旧版只含 expression + motion 的指令，
-       * 不会意外清除当前正在显示的文字。
+       * 只有 Render 明确发送 text_to_display 时才更新文字，
+       * 避免旧版 expression + motion 调用清除已有文字。
        */
       JsonVariantConst textToDisplay = doc["text_to_display"];
 
-      if (!textToDisplay.isNull() && textToDisplay.is<const char*>()) {
+      if (
+        !textToDisplay.isNull() &&
+        textToDisplay.is<const char*>()
+      ) {
         const char* text = textToDisplay.as<const char*>();
 
         unsigned long durationMs =
@@ -267,17 +353,24 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
 
         if (strcmp(motion, "nod") == 0) {
           startNod();
+
         } else if (strcmp(motion, "home") == 0) {
           cancelGesture();
           M5StackChan.Motion.goHome(500);
           Serial.println("[GESTURE] Home sent");
+
         } else if (strcmp(motion, "none") == 0) {
           Serial.println("[GESTURE] No motion requested");
+
         } else if (strcmp(motion, "shake") == 0) {
           // 暂不执行：尚未在实体设备验证安全范围。
           Serial.println("[GESTURE] Shake ignored: not hardware-tested yet");
         }
-      } else if (action != nullptr && strcmp(action, "home") == 0) {
+
+      } else if (
+        action != nullptr &&
+        strcmp(action, "home") == 0
+      ) {
         cancelGesture();
         M5StackChan.Motion.goHome(500);
         Serial.println("[GESTURE] Home sent");
@@ -297,7 +390,7 @@ void setup() {
 
   Serial.println();
   Serial.println(
-    "=== StackChan WiFi + Render + Servo + Display firmware ==="
+    "=== StackChan WiFi + Render + Servo + Display + Touch firmware ==="
   );
 
   // StackChan-BSP 负责设备、舵机供电和舵机总线的官方初始化。
@@ -307,7 +400,7 @@ void setup() {
   M5StackChan.Motion.setAutoTorqueReleaseEnabled(true);
   M5StackChan.Motion.goHome(500);
 
-  // 注意：Avatar 还未启动，因此此阶段可以安全直接显示文字。
+  // Avatar 尚未启动，因此这个阶段可以安全直接操作 M5.Display。
   showBootMessage("WiFi starting...", "Please wait");
 
   prefs.begin("stackchan", false);
@@ -341,7 +434,7 @@ void setup() {
       "AP: StackChan-Setup\nOpen: 192.168.4.1"
     );
 
-    // 不设置门户超时：等用户完成配网。
+    // 不设置门户超时：等待用户完成配网。
     wm.startConfigPortal("StackChan-Setup");
   }
 
@@ -358,8 +451,10 @@ void setup() {
 
   Serial.printf("[CONFIG] Active Render host: '%s'\n", ws_host);
 
-  // Wi‑Fi 配置完成后才启动 Avatar。
-  // 从这里开始，不再直接操作 M5.Display。
+  /*
+   * Wi‑Fi 配置完成后才启动 Avatar。
+   * 从这里开始，不能再直接操作 M5.Display。
+   */
   avatar.init();
   avatar.setExpression(Expression::Neutral);
   avatar.setSpeechText("");
@@ -394,7 +489,7 @@ void loop() {
   webSocket.loop();
   updateGesture();
   updateSpeechText();
+  updateTouchInput();
 
   delay(10);
 }
-

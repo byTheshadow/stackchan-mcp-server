@@ -15,12 +15,131 @@ const wss = new WebSocketServer({ server });
 // 目前仅支持一台机器人；未来可用 robot_id 扩展多台。
 let robotSocket = null;
 
+/*
+ * 实体身体上报的待处理事件。
+ *
+ * 这是短期中继队列，不是角色记忆库：
+ * - 最多 50 条；
+ * - 24 小时后过期；
+ * - Render 重启后会清空；
+ * - 角色 A 处理完成后应调用 acknowledge_robot_events 确认。
+ */
+const pendingRobotEvents = [];
+const MAX_PENDING_EVENTS = 50;
+const EVENT_TTL_MS = 24 * 60 * 60 * 1000;
+
+function pruneExpiredRobotEvents() {
+  const now = Date.now();
+
+  for (let index = pendingRobotEvents.length - 1; index >= 0; index--) {
+    const event = pendingRobotEvents[index];
+    const receivedAtMs = Date.parse(event.received_at);
+
+    if (
+      Number.isNaN(receivedAtMs) ||
+      now - receivedAtMs > EVENT_TTL_MS
+    ) {
+      pendingRobotEvents.splice(index, 1);
+    }
+  }
+}
+
+function makeRobotEventId() {
+  return `evt_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function addRobotEvent(rawEvent) {
+  pruneExpiredRobotEvents();
+
+  const event = {
+    id: makeRobotEventId(),
+    source: 'stackchan',
+    event: rawEvent.event,
+    x: rawEvent.x,
+    y: rawEvent.y,
+    device_uptime_ms: rawEvent.at_ms,
+    received_at: new Date().toISOString()
+  };
+
+  pendingRobotEvents.push(event);
+
+  while (pendingRobotEvents.length > MAX_PENDING_EVENTS) {
+    pendingRobotEvents.shift();
+  }
+
+  console.log('⬅️ 已记录机器人事件：', event);
+
+  return event;
+}
+
+function getPendingRobotEvents() {
+  pruneExpiredRobotEvents();
+
+  const now = Date.now();
+
+  return pendingRobotEvents.map((event) => {
+    const receivedAtMs = Date.parse(event.received_at);
+
+    return {
+      ...event,
+      seconds_ago: Math.max(
+        0,
+        Math.floor((now - receivedAtMs) / 1000)
+      )
+    };
+  });
+}
+
+function acknowledgeRobotEvents(eventIds) {
+  pruneExpiredRobotEvents();
+
+  const idSet = new Set(eventIds);
+  let acknowledged = 0;
+
+  for (let index = pendingRobotEvents.length - 1; index >= 0; index--) {
+    if (idSet.has(pendingRobotEvents[index].id)) {
+      pendingRobotEvents.splice(index, 1);
+      acknowledged++;
+    }
+  }
+
+  return acknowledged;
+}
+
 wss.on('connection', (ws, req) => {
   console.log(`✅ StackChan 机器人已连接：${req.socket.remoteAddress}`);
   robotSocket = ws;
 
   ws.on('message', (message) => {
-    console.log('机器人上报：', message.toString());
+    const text = message.toString();
+
+    console.log('机器人上报：', text);
+
+    let data;
+
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // 机器人偶尔发送的非 JSON 调试内容仅记录日志，不作为事件处理。
+      return;
+    }
+
+    /*
+     * 第一版只接受 touch_tap。
+     * 不能让机器人任意上报内容写入事件队列。
+     */
+    if (
+      data &&
+      data.type === 'robot_event' &&
+      data.event === 'touch_tap' &&
+      Number.isInteger(data.x) &&
+      Number.isInteger(data.y) &&
+      Number.isFinite(data.at_ms)
+    ) {
+      addRobotEvent(data);
+    }
   });
 
   ws.on('close', () => {
@@ -61,8 +180,6 @@ function jsonRpcError(id, code, message, data) {
  * 第一轮屏幕文字仅允许可打印 ASCII：
  * - 英文字母、数字、英文标点
  * - ASCII 颜文字，例如 ^_^、:)、T_T、o_O
- *
- * 这样不会依赖中文字体、Unicode 字形或复杂 UTF-8 处理。
  */
 function sanitizeDisplayText(value) {
   if (typeof value !== 'string') {
@@ -74,12 +191,10 @@ function sanitizeDisplayText(value) {
   for (const char of value) {
     const code = char.charCodeAt(0);
 
-    // 仅保留 ASCII 可打印字符：空格到 ~
     if (code >= 32 && code <= 126) {
       result += char;
     }
 
-    // 限制为 80 个 ASCII 字符，防止超长文本。
     if (result.length >= 80) {
       break;
     }
@@ -103,9 +218,6 @@ function normalizeDisplayDuration(value) {
   );
 }
 
-// 当前实际已经完成实体测试的 MCP 工具定义。
-// shake / tilt / TTS / 音频文件播放尚未在正式固件中启用，
-// 因此本轮不对 PWA 暴露这些未验证功能。
 const controlRobotTool = {
   name: 'control_robot',
   description:
@@ -147,6 +259,38 @@ const controlRobotTool = {
   }
 };
 
+const getRobotEventsTool = {
+  name: 'get_robot_events',
+  description:
+    '读取 StackChan 实体身体尚未处理的近期感应事件。当前仅支持 touch_tap，表示用户触摸了一次屏幕。每条事件提供 received_at 和 seconds_ago。读取不会自动删除事件；角色 A 处理后应调用 acknowledge_robot_events，避免未来重复提及。',
+  inputSchema: {
+    type: 'object',
+    properties: {}
+  }
+};
+
+const acknowledgeRobotEventsTool = {
+  name: 'acknowledge_robot_events',
+  description:
+    '确认角色 A 已处理的 StackChan 实体事件。确认后事件会从待处理队列删除，不会再由 get_robot_events 返回。',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      event_ids: {
+        type: 'array',
+        items: {
+          type: 'string'
+        },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          '要确认并删除的事件 ID 列表；ID 来自 get_robot_events。'
+      }
+    },
+    required: ['event_ids']
+  }
+};
+
 function normalizeRobotArguments(args = {}) {
   const allowedExpressions = [
     'happy',
@@ -170,11 +314,8 @@ function normalizeRobotArguments(args = {}) {
   };
 
   /*
-   * 只有调用方明确传入 text_to_display 时，
-   * 才发送文字字段给机器人。
-   *
-   * 这样旧的 expression + motion 调用不会意外清除
-   * 当前正在显示的一条文字。
+   * 只有调用方明确传入 text_to_display 时才发送文字字段，
+   * 以保证旧调用不会清除当前文字。
    */
   if (typeof args.text_to_display === 'string') {
     normalized.text_to_display = sanitizeDisplayText(args.text_to_display);
@@ -209,20 +350,26 @@ function sendRobotControl(args = {}) {
   };
 }
 
+function formatRobotEventsText(events) {
+  if (events.length === 0) {
+    return '没有尚未处理的实体事件。';
+  }
+
+  const lines = events.map((event) => {
+    if (event.event === 'touch_tap') {
+      return `- 用户在 ${event.seconds_ago} 秒前触摸了 StackChan 屏幕一次（事件 ID：${event.id}）。`;
+    }
+
+    return `- 未知实体事件：${event.event}（事件 ID：${event.id}）。`;
+  });
+
+  return `尚未处理的实体事件：\n${lines.join('\n')}`;
+}
+
 /*
  * 标准 MCP Streamable HTTP 入口。
- *
- * PWA 应填写：
+ * PWA 地址：
  * https://stackchan-mcp-server.onrender.com/mcp
- *
- * 支持：
- * - initialize
- * - notifications/initialized
- * - tools/list
- * - tools/call
- *
- * 这是无状态 JSON 响应模式：每次请求独立处理，
- * 不保存 PWA 的聊天记录、人设或模型 API Key。
  */
 app.post('/mcp', (req, res) => {
   const request = req.body;
@@ -241,7 +388,6 @@ app.post('/mcp', (req, res) => {
 
   console.log(`MCP request: ${method}`);
 
-  // JSON-RPC notification 没有 id，按规范返回 202 且不带响应体。
   const isNotification = id === undefined || id === null;
 
   if (method === 'initialize') {
@@ -252,10 +398,10 @@ app.post('/mcp', (req, res) => {
       },
       serverInfo: {
         name: 'stackchan-robot-relay',
-        version: '1.1.0'
+        version: '1.2.0'
       },
       instructions:
-        '此服务只负责转发角色 A 对 StackChan 实体身体的控制命令。当前可用：Avatar 表情、英文或 ASCII 颜文字短文字、nod 点头、home 回中。'
+        '此服务负责 StackChan 实体身体的上下行中继。可控制表情、短文字、nod、home；也可读取和确认近期实体触摸事件。'
     };
 
     return res
@@ -274,28 +420,47 @@ app.post('/mcp', (req, res) => {
       .type('application/json')
       .json(
         jsonRpcSuccess(id, {
-          tools: [controlRobotTool]
+          tools: [
+            controlRobotTool,
+            getRobotEventsTool,
+            acknowledgeRobotEventsTool
+          ]
         })
       );
   }
 
   if (method === 'tools/call') {
-    if (params.name !== 'control_robot') {
-      return res
-        .status(200)
-        .type('application/json')
-        .json(
-          jsonRpcError(
-            id,
-            -32601,
-            `Unknown tool: ${params.name || '(missing)'}`
-          )
-        );
-    }
+    if (params.name === 'control_robot') {
+      const result = sendRobotControl(params.arguments ?? {});
 
-    const result = sendRobotControl(params.arguments ?? {});
+      if (!result.ok) {
+        return res
+          .status(200)
+          .type('application/json')
+          .json(
+            jsonRpcSuccess(id, {
+              content: [
+                {
+                  type: 'text',
+                  text: `机器人离线：${result.error}`
+                }
+              ],
+              isError: true
+            })
+          );
+      }
 
-    if (!result.ok) {
+      const {
+        expression,
+        motion,
+        text_to_display: textToDisplay
+      } = result.payload;
+
+      const textDescription =
+        textToDisplay === undefined
+          ? ''
+          : `，屏幕文字=${textToDisplay || '(清除)'}`;
+
       return res
         .status(200)
         .type('application/json')
@@ -304,37 +469,88 @@ app.post('/mcp', (req, res) => {
             content: [
               {
                 type: 'text',
-                text: `机器人离线：${result.error}`
+                text: `机器人已收到指令：表情=${expression}，动作=${motion}${textDescription}`
               }
-            ],
-            isError: true
+            ]
           })
         );
     }
 
-    const {
-      expression,
-      motion,
-      text_to_display: textToDisplay
-    } = result.payload;
+    if (params.name === 'get_robot_events') {
+      const events = getPendingRobotEvents();
 
-    const textDescription =
-      textToDisplay === undefined
-        ? ''
-        : `，屏幕文字=${textToDisplay || '(清除)'}`;
+      return res
+        .status(200)
+        .type('application/json')
+        .json(
+          jsonRpcSuccess(id, {
+            content: [
+              {
+                type: 'text',
+                text: formatRobotEventsText(events)
+              }
+            ],
+            structuredContent: {
+              events
+            }
+          })
+        );
+    }
+
+    if (params.name === 'acknowledge_robot_events') {
+      const eventIds = params.arguments?.event_ids;
+
+      if (
+        !Array.isArray(eventIds) ||
+        eventIds.length === 0 ||
+        eventIds.length > 50 ||
+        !eventIds.every((item) => typeof item === 'string')
+      ) {
+        return res
+          .status(200)
+          .type('application/json')
+          .json(
+            jsonRpcSuccess(id, {
+              content: [
+                {
+                  type: 'text',
+                  text: 'event_ids 必须是包含 1 至 50 个事件 ID 的字符串数组。'
+                }
+              ],
+              isError: true
+            })
+          );
+      }
+
+      const acknowledged = acknowledgeRobotEvents(eventIds);
+
+      return res
+        .status(200)
+        .type('application/json')
+        .json(
+          jsonRpcSuccess(id, {
+            content: [
+              {
+                type: 'text',
+                text: `已确认 ${acknowledged} 条实体事件。`
+              }
+            ],
+            structuredContent: {
+              acknowledged
+            }
+          })
+        );
+    }
 
     return res
       .status(200)
       .type('application/json')
       .json(
-        jsonRpcSuccess(id, {
-          content: [
-            {
-              type: 'text',
-              text: `机器人已收到指令：表情=${expression}，动作=${motion}${textDescription}`
-            }
-          ]
-        })
+        jsonRpcError(
+          id,
+          -32601,
+          `Unknown tool: ${params.name || '(missing)'}`
+        )
       );
   }
 
@@ -348,8 +564,6 @@ app.post('/mcp', (req, res) => {
     .json(jsonRpcError(id, -32601, `Method not found: ${method}`));
 });
 
-// Streamable HTTP MCP 客户端有时会发 GET 探测。
-// 当前服务使用无状态、非 SSE 的 JSON 响应模式，因此明确返回 405。
 app.get('/mcp', (req, res) => {
   res
     .status(405)
@@ -357,11 +571,6 @@ app.get('/mcp', (req, res) => {
     .type('text')
     .send('This MCP endpoint accepts POST JSON-RPC requests.');
 });
-
-/*
- * 以下是旧的临时接口。
- * 保留它，以免影响此前在浏览器 Console 中测试成功的 fetch 调用。
- */
 
 // 健康检查
 app.get('/', (req, res) => {
@@ -371,11 +580,15 @@ app.get('/', (req, res) => {
 // 旧工具说明接口
 app.get('/mcp/tools', (req, res) => {
   res.json({
-    tools: [controlRobotTool]
+    tools: [
+      controlRobotTool,
+      getRobotEventsTool,
+      acknowledgeRobotEventsTool
+    ]
   });
 });
 
-// 旧的自定义控制接口
+// 旧自定义控制接口，继续保留。
 app.post('/mcp/call', (req, res) => {
   const { tool, arguments: args = {} } = req.body ?? {};
 
@@ -409,6 +622,35 @@ app.post('/mcp/call', (req, res) => {
         text: `已发送机器人指令：expression=${expression}, motion=${motion}${textDescription}`
       }
     ]
+  });
+});
+
+/*
+ * 仅供当前浏览器控制台手工测试的临时事件接口。
+ * PWA 正式集成时请使用 MCP 工具，不需要依赖这两个 HTTP 路由。
+ */
+app.get('/robot/events', (req, res) => {
+  res.json({
+    events: getPendingRobotEvents()
+  });
+});
+
+app.post('/robot/events/ack', (req, res) => {
+  const eventIds = req.body?.event_ids;
+
+  if (
+    !Array.isArray(eventIds) ||
+    !eventIds.every((item) => typeof item === 'string')
+  ) {
+    return res.status(400).json({
+      error: 'event_ids must be an array of strings'
+    });
+  }
+
+  const acknowledged = acknowledgeRobotEvents(eventIds);
+
+  return res.json({
+    acknowledged
   });
 });
 
