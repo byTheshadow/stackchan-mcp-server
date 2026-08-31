@@ -51,6 +51,14 @@ const unsigned long MAX_DISPLAY_DURATION_MS = 10000;
 const unsigned long TOUCH_EVENT_DEBOUNCE_MS = 700;
 unsigned long lastTouchEventMs = 0;
 
+/*
+ * StackChan 头顶电容触摸的独立防抖。
+ * 不与屏幕触摸共用计时，避免摸头后立刻摸屏幕被错误忽略。
+ */
+const unsigned long HEAD_TOUCH_DEBOUNCE_MS = 700;
+unsigned long lastHeadTouchEventMs = 0;
+
+
 void showBootMessage(const char* line1, const char* line2 = nullptr) {
   // 只能在 avatar.init() 之前调用。
   M5.Display.clear(TFT_BLACK);
@@ -253,6 +261,58 @@ void sendTouchTapEvent(int32_t x, int32_t y) {
     static_cast<long>(y)
   );
 }
+
+
+void sendHeadTouchEvent() {
+  if (!webSocket.isConnected()) {
+    Serial.println("[HEAD] Touch detected, but WebSocket is disconnected");
+    return;
+  }
+
+  StaticJsonDocument<128> eventDoc;
+
+  eventDoc["type"] = "robot_event";
+  eventDoc["event"] = "head_touch";
+  eventDoc["at_ms"] = millis();
+
+  String eventJson;
+  serializeJson(eventDoc, eventJson);
+
+  webSocket.sendTXT(eventJson);
+
+  Serial.println("[HEAD] head_touch sent");
+}
+
+void updateHeadTouchInput() {
+  /*
+   * M5StackChan.update() 已在 loop() 开头调用。
+   * StackChan-BSP 会在其中更新 TouchSensor 状态。
+   *
+   * wasClicked() 是官方 TouchSensor 示例使用的事件 API：
+   * 它代表一次完成的头顶触摸/点击，不会在手指持续按住时持续触发。
+   */
+  auto& touchSensor = M5StackChan.TouchSensor;
+
+  if (!touchSensor.wasClicked()) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  if (
+    lastHeadTouchEventMs != 0 &&
+    now - lastHeadTouchEventMs < HEAD_TOUCH_DEBOUNCE_MS
+  ) {
+    Serial.println("[HEAD] Ignored by debounce");
+    return;
+  }
+
+  lastHeadTouchEventMs = now;
+
+  Serial.println("[HEAD] Clicked");
+  sendHeadTouchEvent();
+}
+
 
 /*
  * 检查屏幕的新一次按下。
@@ -490,6 +550,7 @@ void loop() {
   updateGesture();
   updateSpeechText();
   updateTouchInput();
+    updateHeadTouchInput();
 
   delay(10);
 }

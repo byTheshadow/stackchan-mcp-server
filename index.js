@@ -130,16 +130,24 @@ wss.on('connection', (ws, req) => {
      * 第一版只接受 touch_tap。
      * 不能让机器人任意上报内容写入事件队列。
      */
-    if (
-      data &&
-      data.type === 'robot_event' &&
-      data.event === 'touch_tap' &&
-      Number.isInteger(data.x) &&
-      Number.isInteger(data.y) &&
-      Number.isFinite(data.at_ms)
-    ) {
-      addRobotEvent(data);
-    }
+    const isScreenTouchEvent =
+  data &&
+  data.type === 'robot_event' &&
+  data.event === 'touch_tap' &&
+  Number.isInteger(data.x) &&
+  Number.isInteger(data.y) &&
+  Number.isFinite(data.at_ms);
+
+const isHeadTouchEvent =
+  data &&
+  data.type === 'robot_event' &&
+  data.event === 'head_touch' &&
+  Number.isFinite(data.at_ms);
+
+if (isScreenTouchEvent || isHeadTouchEvent) {
+  addRobotEvent(data);
+}
+
   });
 
   ws.on('close', () => {
@@ -356,11 +364,16 @@ function formatRobotEventsText(events) {
   }
 
   const lines = events.map((event) => {
-    if (event.event === 'touch_tap') {
-      return `- 用户在 ${event.seconds_ago} 秒前触摸了 StackChan 屏幕一次（事件 ID：${event.id}）。`;
-    }
+   if (event.event === 'touch_tap') {
+  return `- 用户在 ${event.seconds_ago} 秒前触摸了 StackChan 屏幕一次（事件 ID：${event.id}）。`;
+}
 
-    return `- 未知实体事件：${event.event}（事件 ID：${event.id}）。`;
+if (event.event === 'head_touch') {
+  return `- 用户在 ${event.seconds_ago} 秒前摸了 StackChan 的头顶一次（事件 ID：${event.id}）。`;
+}
+
+return `- 未知实体事件：${event.event}（事件 ID：${event.id}）。`;
+
   });
 
   return `尚未处理的实体事件：\n${lines.join('\n')}`;
