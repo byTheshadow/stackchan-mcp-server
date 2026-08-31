@@ -27,6 +27,21 @@ GestureKind activeGesture = GESTURE_NONE;
 uint8_t gestureStep = 0;
 unsigned long nextGestureStepMs = 0;
 
+/*
+ * 屏幕文字状态。
+ *
+ * 注意：
+ * Avatar 启动后，必须通过 avatar.setSpeechText() 显示文字，
+ * 不能直接操作 M5.Display，否则可能与 Avatar 的显示任务冲突。
+ */
+String activeSpeechText = "";
+bool speechClearScheduled = false;
+unsigned long speechClearAtMs = 0;
+
+const unsigned long DEFAULT_DISPLAY_DURATION_MS = 5000;
+const unsigned long MIN_DISPLAY_DURATION_MS = 1000;
+const unsigned long MAX_DISPLAY_DURATION_MS = 10000;
+
 void showBootMessage(const char* line1, const char* line2 = nullptr) {
   // 只能在 avatar.init() 之前调用。
   M5.Display.clear(TFT_BLACK);
@@ -59,6 +74,73 @@ void setExpressionByName(const char* expr) {
   } else {
     avatar.setExpression(Expression::Neutral);
   }
+}
+
+unsigned long clampDisplayDuration(unsigned long durationMs) {
+  if (durationMs < MIN_DISPLAY_DURATION_MS) {
+    return MIN_DISPLAY_DURATION_MS;
+  }
+
+  if (durationMs > MAX_DISPLAY_DURATION_MS) {
+    return MAX_DISPLAY_DURATION_MS;
+  }
+
+  return durationMs;
+}
+
+void setSpeechTextForDuration(
+  const char* text,
+  unsigned long durationMs
+) {
+  if (text == nullptr) {
+    return;
+  }
+
+  activeSpeechText = text;
+  avatar.setSpeechText(activeSpeechText.c_str());
+
+  /*
+   * 空文字有明确含义：立即清除屏幕文字，
+   * 同时取消之前的自动清除计时。
+   */
+  if (activeSpeechText.length() == 0) {
+    speechClearScheduled = false;
+    speechClearAtMs = 0;
+    Serial.println("[DISPLAY] Speech text cleared");
+    return;
+  }
+
+  durationMs = clampDisplayDuration(durationMs);
+  speechClearAtMs = millis() + durationMs;
+  speechClearScheduled = true;
+
+  Serial.printf(
+    "[DISPLAY] Speech text set: \"%s\" (%lu ms)\n",
+    activeSpeechText.c_str(),
+    durationMs
+  );
+}
+
+void updateSpeechText() {
+  if (!speechClearScheduled) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  /*
+   * 使用有符号差值，能安全处理 millis() 溢出。
+   */
+  if (static_cast<long>(now - speechClearAtMs) < 0) {
+    return;
+  }
+
+  avatar.setSpeechText("");
+  activeSpeechText = "";
+  speechClearScheduled = false;
+  speechClearAtMs = 0;
+
+  Serial.println("[DISPLAY] Speech text auto-cleared");
 }
 
 void cancelGesture() {
@@ -159,6 +241,22 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
       const char* motion = doc["motion"];
       const char* action = doc["action"];
 
+      /*
+       * 只有 Render 明确发送 text_to_display 时才更新文字。
+       * 因此旧版只含 expression + motion 的指令，
+       * 不会意外清除当前正在显示的文字。
+       */
+      JsonVariantConst textToDisplay = doc["text_to_display"];
+
+      if (!textToDisplay.isNull() && textToDisplay.is<const char*>()) {
+        const char* text = textToDisplay.as<const char*>();
+
+        unsigned long durationMs =
+          doc["display_duration_ms"] | DEFAULT_DISPLAY_DURATION_MS;
+
+        setSpeechTextForDuration(text, durationMs);
+      }
+
       if (expression != nullptr) {
         Serial.printf("[ACTION] Expression: %s\n", expression);
         setExpressionByName(expression);
@@ -173,6 +271,8 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
           cancelGesture();
           M5StackChan.Motion.goHome(500);
           Serial.println("[GESTURE] Home sent");
+        } else if (strcmp(motion, "none") == 0) {
+          Serial.println("[GESTURE] No motion requested");
         } else if (strcmp(motion, "shake") == 0) {
           // 暂不执行：尚未在实体设备验证安全范围。
           Serial.println("[GESTURE] Shake ignored: not hardware-tested yet");
@@ -196,7 +296,9 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("=== StackChan WiFi + Render + Servo firmware ===");
+  Serial.println(
+    "=== StackChan WiFi + Render + Servo + Display firmware ==="
+  );
 
   // StackChan-BSP 负责设备、舵机供电和舵机总线的官方初始化。
   M5StackChan.begin();
@@ -260,6 +362,7 @@ void setup() {
   // 从这里开始，不再直接操作 M5.Display。
   avatar.init();
   avatar.setExpression(Expression::Neutral);
+  avatar.setSpeechText("");
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WIFI] Not connected; WebSocket will not start");
@@ -268,7 +371,9 @@ void setup() {
 
   if (strlen(ws_host) == 0) {
     Serial.println("[WS] Render host is empty.");
-    Serial.println("[WS] Open StackChan-Setup and fill Render Server Host.");
+    Serial.println(
+      "[WS] Open StackChan-Setup and fill Render Server Host."
+    );
     return;
   }
 
@@ -288,5 +393,8 @@ void loop() {
   M5StackChan.update();
   webSocket.loop();
   updateGesture();
+  updateSpeechText();
+
   delay(10);
 }
+

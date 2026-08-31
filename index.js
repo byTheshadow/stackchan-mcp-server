@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -58,19 +57,66 @@ function jsonRpcError(id, code, message, data) {
   };
 }
 
+/*
+ * 第一轮屏幕文字仅允许可打印 ASCII：
+ * - 英文字母、数字、英文标点
+ * - ASCII 颜文字，例如 ^_^、:)、T_T、o_O
+ *
+ * 这样不会依赖中文字体、Unicode 字形或复杂 UTF-8 处理。
+ */
+function sanitizeDisplayText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  let result = '';
+
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+
+    // 仅保留 ASCII 可打印字符：空格到 ~
+    if (code >= 32 && code <= 126) {
+      result += char;
+    }
+
+    // 限制为 80 个 ASCII 字符，防止超长文本。
+    if (result.length >= 80) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+function normalizeDisplayDuration(value) {
+  const defaultDurationMs = 5000;
+  const minDurationMs = 1000;
+  const maxDurationMs = 10000;
+
+  if (!Number.isInteger(value)) {
+    return defaultDurationMs;
+  }
+
+  return Math.min(
+    maxDurationMs,
+    Math.max(minDurationMs, value)
+  );
+}
+
 // 当前实际已经完成实体测试的 MCP 工具定义。
-// shake / tilt / TTS 尚未在当前正式固件中启用，因此不对 PWA 暴露。
+// shake / tilt / TTS / 音频文件播放尚未在正式固件中启用，
+// 因此本轮不对 PWA 暴露这些未验证功能。
 const controlRobotTool = {
   name: 'control_robot',
   description:
-    '控制角色 A 的 StackChan 实体身体。可设置表情，并执行已经过实体验证的 nod（点头）或 home（回到正中）。不要使用未提供的动作。',
+    '控制角色 A 的 StackChan 实体身体。可设置表情、显示短英文或 ASCII 颜文字，并执行已经过实体验证的 nod（点头）或 home（回到正中）。不要使用未提供的动作。',
   inputSchema: {
     type: 'object',
     properties: {
       expression: {
         type: 'string',
         enum: ['happy', 'sad', 'angry', 'doubt', 'sleepy', 'neutral'],
-        description: '机器人表情。'
+        description: '机器人 Avatar 图形表情。'
       },
       motion: {
         type: 'string',
@@ -78,10 +124,23 @@ const controlRobotTool = {
         description:
           '机器人动作：nod 为点头一次且自动回中；home 为立即回到正中；none 为不执行动作。'
       },
+      text_to_display: {
+        type: 'string',
+        maxLength: 80,
+        description:
+          '可选。显示在机器人屏幕上的短英文或 ASCII 颜文字。第一轮仅支持可打印 ASCII，例如 "^_^ Hi!"、":)"、"T_T Miss you."。'
+      },
+      display_duration_ms: {
+        type: 'integer',
+        minimum: 1000,
+        maximum: 10000,
+        description:
+          '可选。屏幕文字停留时间，单位毫秒；范围 1000 至 10000，默认 5000。'
+      },
       text_to_speak: {
         type: 'string',
         description:
-          '角色 A 希望说出的文本。目前机器人 TTS 尚未接入，此字段会被安全忽略。'
+          '保留给未来 TTS 使用。目前机器人 TTS 尚未接入，此字段会安全忽略；请使用 text_to_display 显示屏幕文字。'
       }
     },
     required: ['expression']
@@ -100,19 +159,31 @@ function normalizeRobotArguments(args = {}) {
 
   const allowedMotions = ['nod', 'home', 'none'];
 
-  return {
+  const normalized = {
     expression: allowedExpressions.includes(args.expression)
       ? args.expression
       : 'neutral',
 
     motion: allowedMotions.includes(args.motion)
       ? args.motion
-      : 'none',
-
-    text: typeof args.text_to_speak === 'string'
-      ? args.text_to_speak
-      : ''
+      : 'none'
   };
+
+  /*
+   * 只有调用方明确传入 text_to_display 时，
+   * 才发送文字字段给机器人。
+   *
+   * 这样旧的 expression + motion 调用不会意外清除
+   * 当前正在显示的一条文字。
+   */
+  if (typeof args.text_to_display === 'string') {
+    normalized.text_to_display = sanitizeDisplayText(args.text_to_display);
+    normalized.display_duration_ms = normalizeDisplayDuration(
+      args.display_duration_ms
+    );
+  }
+
+  return normalized;
 }
 
 function sendRobotControl(args = {}) {
@@ -156,7 +227,11 @@ function sendRobotControl(args = {}) {
 app.post('/mcp', (req, res) => {
   const request = req.body;
 
-  if (!request || request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
+  if (
+    !request ||
+    request.jsonrpc !== '2.0' ||
+    typeof request.method !== 'string'
+  ) {
     return res.status(400).json(
       jsonRpcError(null, -32600, 'Invalid JSON-RPC request')
     );
@@ -177,10 +252,10 @@ app.post('/mcp', (req, res) => {
       },
       serverInfo: {
         name: 'stackchan-robot-relay',
-        version: '1.0.0'
+        version: '1.1.0'
       },
       instructions:
-        '此服务只负责转发角色 A 对 StackChan 实体身体的控制命令。当前可用：表情、nod 点头、home 回中。'
+        '此服务只负责转发角色 A 对 StackChan 实体身体的控制命令。当前可用：Avatar 表情、英文或 ASCII 颜文字短文字、nod 点头、home 回中。'
     };
 
     return res
@@ -210,7 +285,11 @@ app.post('/mcp', (req, res) => {
         .status(200)
         .type('application/json')
         .json(
-          jsonRpcError(id, -32601, `Unknown tool: ${params.name || '(missing)'}`)
+          jsonRpcError(
+            id,
+            -32601,
+            `Unknown tool: ${params.name || '(missing)'}`
+          )
         );
     }
 
@@ -233,7 +312,16 @@ app.post('/mcp', (req, res) => {
         );
     }
 
-    const { expression, motion } = result.payload;
+    const {
+      expression,
+      motion,
+      text_to_display: textToDisplay
+    } = result.payload;
+
+    const textDescription =
+      textToDisplay === undefined
+        ? ''
+        : `，屏幕文字=${textToDisplay || '(清除)'}`;
 
     return res
       .status(200)
@@ -243,7 +331,7 @@ app.post('/mcp', (req, res) => {
           content: [
             {
               type: 'text',
-              text: `机器人已收到指令：表情=${expression}，动作=${motion}`
+              text: `机器人已收到指令：表情=${expression}，动作=${motion}${textDescription}`
             }
           ]
         })
@@ -272,7 +360,7 @@ app.get('/mcp', (req, res) => {
 
 /*
  * 以下是旧的临时接口。
- * 保留它，以免影响你此前在浏览器 Console 中已测试成功的 fetch 调用。
+ * 保留它，以免影响此前在浏览器 Console 中测试成功的 fetch 调用。
  */
 
 // 健康检查
@@ -303,13 +391,22 @@ app.post('/mcp/call', (req, res) => {
     });
   }
 
-  const { expression, motion } = result.payload;
+  const {
+    expression,
+    motion,
+    text_to_display: textToDisplay
+  } = result.payload;
+
+  const textDescription =
+    textToDisplay === undefined
+      ? ''
+      : `, text_to_display=${textToDisplay || '(clear)'}`;
 
   return res.json({
     content: [
       {
         type: 'text',
-        text: `已发送机器人指令：expression=${expression}, motion=${motion}`
+        text: `已发送机器人指令：expression=${expression}, motion=${motion}${textDescription}`
       }
     ]
   });
@@ -320,4 +417,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-
