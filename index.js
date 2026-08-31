@@ -184,32 +184,15 @@ function jsonRpcError(id, code, message, data) {
   };
 }
 
-/*
- * 第一轮屏幕文字仅允许可打印 ASCII：
- * - 英文字母、数字、英文标点
- * - ASCII 颜文字，例如 ^_^、:)、T_T、o_O
- */
+
 function sanitizeDisplayText(value) {
   if (typeof value !== 'string') {
     return '';
   }
-
-  let result = '';
-
-  for (const char of value) {
-    const code = char.charCodeAt(0);
-
-    if (code >= 32 && code <= 126) {
-      result += char;
-    }
-
-    if (result.length >= 80) {
-      break;
-    }
-  }
-
-  return result;
+  // 去除可能破坏 JSON 的控制字符（保留换行除外的正常字符），限制最大 80 字符，不拦截中文和 Unicode
+  return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').slice(0, 80);
 }
+
 
 function normalizeDisplayDuration(value) {
   const defaultDurationMs = 5000;
