@@ -636,6 +636,7 @@ app.post('/mcp/call', (req, res) => {
   const {
     expression,
     motion,
+    sound,
     text_to_display: textToDisplay
   } = result.payload;
 
@@ -648,11 +649,15 @@ app.post('/mcp/call', (req, res) => {
     content: [
       {
         type: 'text',
-        text: `已发送机器人指令：expression=${expression}, motion=${motion}, sound=${sound}${textDescription}`
+        text:
+          `已发送机器人指令：expression=${expression}, ` +
+          `motion=${motion}, sound=${sound}` +
+          textDescription
       }
     ]
   });
 });
+
 
 /*
  * 仅供当前浏览器控制台手工测试的临时事件接口。
