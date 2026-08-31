@@ -228,15 +228,16 @@ function normalizeDisplayDuration(value) {
 
 const controlRobotTool = {
   name: 'control_robot',
-  description:
-    '控制角色 A 的 StackChan 实体身体。可设置表情、显示短英文或 ASCII 颜文字，并执行已经过实体验证的 nod（点头）或 home（回到正中）。不要使用未提供的动作。',
+ description:
+  '控制你的 StackChan 实体身体。你可以根据当前对话、情绪和互动语境，自主选择合适的图形表情、简短英文文字和 ASCII 颜文字，并执行已经过实体验证的 nod（点头）或 home（回到正中）。不要使用未提供的动作、表情或声音。',
   inputSchema: {
     type: 'object',
     properties: {
       expression: {
         type: 'string',
         enum: ['happy', 'sad', 'angry', 'doubt', 'sleepy', 'neutral'],
-        description: '机器人 Avatar 图形表情。'
+        description:
+  '你的实体身体的图形表情。根据语境自行选择：happy=开心、友好、感谢；sad=难过、遗憾、安慰；angry=不满、认真或强调；doubt=疑惑、思考、不确定；sleepy=困倦、晚安或休息；neutral=平静、默认状态。只能使用提供的枚举值。'
       },
       motion: {
         type: 'string',
@@ -248,14 +249,16 @@ const controlRobotTool = {
         type: 'string',
         maxLength: 80,
         description:
-          '可选。显示在机器人屏幕上的短英文或 ASCII 颜文字。第一轮仅支持可打印 ASCII，例如 "^_^ Hi!"、":)"、"T_T Miss you."。'
+  '可选。显示在你的实体身体屏幕上的简短英文文字或 ASCII 颜文字。你应根据对话和情绪自行选择自然、简短的内容，而不是固定使用同一句话。仅支持可打印 ASCII：英文字母、数字、半角英文标点、空格和 ASCII 颜文字；不要使用中文、emoji、Unicode 颜文字、全角字符或换行。最多 80 个字符。推荐优先使用 1 至 8 个英文单词，必要时搭配一个 ASCII 颜文字。示例： "^_^ Hi!"、"I am here :)"、"Yay! \\o/"、"Hmm... o_O"、"Thank you! <3"、"Sorry... T_T"、"Good night... z_z"。'
+
       },
       display_duration_ms: {
         type: 'integer',
         minimum: 1000,
         maximum: 10000,
         description:
-          '可选。屏幕文字停留时间，单位毫秒；范围 1000 至 10000，默认 5000。'
+  '可选。文字在你的实体身体屏幕上停留的时间，单位毫秒；范围为 1000 至 10000，默认 5000。极短颜文字通常用 3000 至 5000；含英文短句通常用 4000 至 7000。'
+
       },
       text_to_speak: {
         type: 'string',
@@ -277,7 +280,7 @@ const controlRobotTool = {
 const getRobotEventsTool = {
   name: 'get_robot_events',
   description:
-    '读取 StackChan 实体身体尚未处理的近期感应事件。当前仅支持 touch_tap，表示用户触摸了一次屏幕。每条事件提供 received_at 和 seconds_ago。读取不会自动删除事件；角色 A 处理后应调用 acknowledge_robot_events，避免未来重复提及。',
+    '读取 StackChan 实体身体尚未处理的近期感应事件。当前仅支持 touch_tap，表示用户触摸了一次屏幕。每条事件提供 received_at 和 seconds_ago。读取不会自动删除事件；角色处理后应调用 acknowledge_robot_events，避免未来重复提及。',
   inputSchema: {
     type: 'object',
     properties: {}
@@ -287,7 +290,7 @@ const getRobotEventsTool = {
 const acknowledgeRobotEventsTool = {
   name: 'acknowledge_robot_events',
   description:
-    '确认角色 A 已处理的 StackChan 实体事件。确认后事件会从待处理队列删除，不会再由 get_robot_events 返回。',
+    '确认角色已处理的 StackChan 实体事件。确认后事件会从待处理队列删除，不会再由 get_robot_events 返回。',
   inputSchema: {
     type: 'object',
     properties: {
