@@ -261,7 +261,14 @@ const controlRobotTool = {
         type: 'string',
         description:
           '保留给未来 TTS 使用。目前机器人 TTS 尚未接入，此字段会安全忽略；请使用 text_to_display 显示屏幕文字。'
-      }
+      },
+      sound: {
+  type: 'string',
+  enum: ['none', 'message', 'emotion'],
+  description:
+    '可选。播放 SD 卡中的短 WAV 提示音：message 为收到新消息提示；emotion 为情绪回应提示；none 为不播放。'
+}
+
     },
     required: ['expression']
   }
@@ -310,6 +317,8 @@ function normalizeRobotArguments(args = {}) {
   ];
 
   const allowedMotions = ['nod', 'home', 'none'];
+  const allowedSounds = ['none', 'message', 'emotion'];
+
 
   const normalized = {
     expression: allowedExpressions.includes(args.expression)
@@ -318,7 +327,12 @@ function normalizeRobotArguments(args = {}) {
 
     motion: allowedMotions.includes(args.motion)
       ? args.motion
-      : 'none'
+      : 'none',
+
+      sound: allowedSounds.includes(args.sound)
+  ? args.sound
+  : 'none'
+
   };
 
   /*
@@ -464,10 +478,12 @@ app.post('/mcp', (req, res) => {
       }
 
       const {
-        expression,
-        motion,
-        text_to_display: textToDisplay
-      } = result.payload;
+  expression,
+  motion,
+  sound,
+  text_to_display: textToDisplay
+} = result.payload;
+
 
       const textDescription =
         textToDisplay === undefined
@@ -482,7 +498,7 @@ app.post('/mcp', (req, res) => {
             content: [
               {
                 type: 'text',
-                text: `机器人已收到指令：表情=${expression}，动作=${motion}${textDescription}`
+               text: `机器人已收到指令：表情=${expression}，动作=${motion}，声音=${sound}${textDescription}`
               }
             ]
           })
@@ -632,7 +648,7 @@ app.post('/mcp/call', (req, res) => {
     content: [
       {
         type: 'text',
-        text: `已发送机器人指令：expression=${expression}, motion=${motion}${textDescription}`
+        text: `已发送机器人指令：expression=${expression}, motion=${motion}, sound=${sound}${textDescription}`
       }
     ]
   });

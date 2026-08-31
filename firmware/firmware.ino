@@ -8,6 +8,9 @@
 #include <Preferences.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
+#include <SPI.h>
+#include <SD.h>
+
 
 using namespace m5avatar;
 
@@ -18,6 +21,28 @@ Preferences prefs;
 char ws_host[128] = "";
 const uint16_t ws_port = 443;
 const char* ws_path = "/";
+/*
+ * M5Stack CoreS3 官方 microSD SPI 引脚定义。
+ *
+ * 来源：CoreS3 官方 SD 卡示例。
+ * 不使用未经验证的其他 GPIO。
+ */
+static constexpr int SD_SPI_CS_PIN = 4;
+static constexpr int SD_SPI_SCK_PIN = 36;
+static constexpr int SD_SPI_MISO_PIN = 35;
+static constexpr int SD_SPI_MOSI_PIN = 37;
+
+bool sdCardReady = false;
+
+/*
+ * WAV 流式读取缓冲。
+ * 采用 M5Unified 官方 Speaker_SD_wav_file 示例的播放方法：
+ * SD 文件 → 分块读取 → M5.Speaker.playRaw(...)
+ */
+static constexpr size_t WAV_BUFFER_COUNT = 3;
+static constexpr size_t WAV_BUFFER_SIZE = 1024;
+uint8_t wavData[WAV_BUFFER_COUNT][WAV_BUFFER_SIZE];
+
 
 enum GestureKind {
   GESTURE_NONE = 0,
@@ -57,6 +82,214 @@ unsigned long lastTouchEventMs = 0;
  */
 const unsigned long HEAD_TOUCH_DEBOUNCE_MS = 700;
 unsigned long lastHeadTouchEventMs = 0;
+
+struct __attribute__((packed)) WavHeader {
+  char riff[4];
+  uint32_t chunkSize;
+  char waveFmt[8];
+  uint32_t fmtChunkSize;
+  uint16_t audioFormat;
+  uint16_t channels;
+  uint32_t sampleRate;
+  uint32_t bytesPerSecond;
+  uint16_t blockAlign;
+  uint16_t bitsPerSample;
+};
+
+struct __attribute__((packed)) WavSubChunk {
+  char identifier[4];
+  uint32_t chunkSize;
+};
+
+/*
+ * 从 SD 卡读取并播放 PCM WAV。
+ *
+ * 第一版只接受官方示例所支持的：
+ * - PCM（audioFormat = 1）
+ * - 8-bit 或 16-bit
+ * - 单声道或立体声
+ *
+ * 本函数从现有 WebSocket 指令中调用。
+ * 文件很短，因此按官方分块播放方案处理。
+ */
+bool playSdWav(const char* filename) {
+  if (!sdCardReady) {
+    Serial.println("[AUDIO] SD card is not ready");
+    return false;
+  }
+
+  if (filename == nullptr || !SD.exists(filename)) {
+    Serial.printf(
+      "[AUDIO] WAV file not found: %s\n",
+      filename == nullptr ? "(null)" : filename
+    );
+    return false;
+  }
+
+  File file = SD.open(filename, FILE_READ);
+
+  if (!file) {
+    Serial.printf("[AUDIO] Failed to open: %s\n", filename);
+    return false;
+  }
+
+  WavHeader header = {};
+
+  if (file.read(
+        reinterpret_cast<uint8_t*>(&header),
+        sizeof(WavHeader)
+      ) != sizeof(WavHeader)) {
+    Serial.printf("[AUDIO] WAV header read failed: %s\n", filename);
+    file.close();
+    return false;
+  }
+
+  Serial.printf(
+    "[AUDIO] WAV %s: format=%u, channels=%u, rate=%lu, bits=%u\n",
+    filename,
+    static_cast<unsigned>(header.audioFormat),
+    static_cast<unsigned>(header.channels),
+    static_cast<unsigned long>(header.sampleRate),
+    static_cast<unsigned>(header.bitsPerSample)
+  );
+
+  if (
+    memcmp(header.riff, "RIFF", 4) != 0 ||
+    memcmp(header.waveFmt, "WAVEfmt ", 8) != 0 ||
+    header.audioFormat != 1 ||
+    header.bitsPerSample < 8 ||
+    header.bitsPerSample > 16 ||
+    header.channels == 0 ||
+    header.channels > 2 ||
+    header.sampleRate == 0
+  ) {
+    Serial.println(
+      "[AUDIO] Unsupported WAV: require PCM, 8/16-bit, mono/stereo"
+    );
+    file.close();
+    return false;
+  }
+
+  /*
+   * 跳过 fmt chunk 其余内容，并查找 data chunk。
+   * 这样可兼容 fmt 后包含额外 chunk 的普通 PCM WAV。
+   */
+  const uint32_t afterFmtOffset =
+    offsetof(WavHeader, audioFormat) + header.fmtChunkSize;
+
+  if (!file.seek(afterFmtOffset)) {
+    Serial.println("[AUDIO] Failed to seek after fmt chunk");
+    file.close();
+    return false;
+  }
+
+  WavSubChunk subChunk = {};
+  bool dataChunkFound = false;
+
+  while (
+    file.available() >= static_cast<int>(sizeof(WavSubChunk)) &&
+    file.read(
+      reinterpret_cast<uint8_t*>(&subChunk),
+      sizeof(WavSubChunk)
+    ) == sizeof(WavSubChunk)
+  ) {
+    if (memcmp(subChunk.identifier, "data", 4) == 0) {
+      dataChunkFound = true;
+      break;
+    }
+
+    if (!file.seek(
+          file.position() + subChunk.chunkSize
+        )) {
+      break;
+    }
+  }
+
+  if (!dataChunkFound) {
+    Serial.println("[AUDIO] WAV data chunk not found");
+    file.close();
+    return false;
+  }
+
+  uint32_t remaining = subChunk.chunkSize;
+  size_t bufferIndex = 0;
+  const bool stereo = header.channels > 1;
+  const bool is16Bit = header.bitsPerSample == 16;
+
+  Serial.printf(
+    "[AUDIO] Playing %s (%lu bytes PCM)\n",
+    filename,
+    static_cast<unsigned long>(remaining)
+  );
+
+  while (remaining > 0) {
+    const size_t requested =
+      remaining < WAV_BUFFER_SIZE
+        ? remaining
+        : WAV_BUFFER_SIZE;
+
+    const size_t bytesRead = file.read(
+      wavData[bufferIndex],
+      requested
+    );
+
+    if (bytesRead == 0) {
+      Serial.println("[AUDIO] Unexpected end of WAV data");
+      break;
+    }
+
+    remaining -= bytesRead;
+
+    if (is16Bit) {
+      M5.Speaker.playRaw(
+        reinterpret_cast<const int16_t*>(wavData[bufferIndex]),
+        bytesRead >> 1,
+        header.sampleRate,
+        stereo,
+        1,
+        0
+      );
+    } else {
+      M5.Speaker.playRaw(
+        reinterpret_cast<const uint8_t*>(wavData[bufferIndex]),
+        bytesRead,
+        header.sampleRate,
+        stereo,
+        1,
+        0
+      );
+    }
+
+    bufferIndex =
+      bufferIndex < (WAV_BUFFER_COUNT - 1)
+        ? bufferIndex + 1
+        : 0;
+  }
+
+  file.close();
+
+  Serial.println("[AUDIO] WAV data queued");
+  return true;
+}
+
+void playSoundByName(const char* sound) {
+  if (sound == nullptr || strcmp(sound, "none") == 0) {
+    return;
+  }
+
+  if (strcmp(sound, "message") == 0) {
+    playSdWav("/message.wav");
+    return;
+  }
+
+  if (strcmp(sound, "emotion") == 0) {
+    playSdWav("/emotion.wav");
+    return;
+  }
+
+  Serial.printf("[AUDIO] Unknown sound ignored: %s\n", sound);
+}
+
 
 
 void showBootMessage(const char* line1, const char* line2 = nullptr) {
@@ -411,8 +644,10 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
       }
 
       const char* expression = doc["expression"];
-      const char* motion = doc["motion"];
-      const char* action = doc["action"];
+const char* motion = doc["motion"];
+const char* sound = doc["sound"];
+const char* action = doc["action"];
+
 
       /*
        * 只有 Render 明确发送 text_to_display 时才更新文字，
@@ -465,6 +700,12 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
         Serial.println("[GESTURE] Home sent");
       }
 
+            if (sound != nullptr) {
+        Serial.printf("[ACTION] Sound: %s\n", sound);
+        playSoundByName(sound);
+      }
+
+
       break;
     }
 
@@ -484,6 +725,43 @@ void setup() {
 
   // StackChan-BSP 负责设备、舵机供电和舵机总线的官方初始化。
   M5StackChan.begin();
+
+    /*
+   * CoreS3 官方 SD 卡初始化。
+   * Avatar 启动前仍允许显示启动信息，但不在此直接修改
+   * Avatar 已接管后的显示内容。
+   */
+  SPI.begin(
+    SD_SPI_SCK_PIN,
+    SD_SPI_MISO_PIN,
+    SD_SPI_MOSI_PIN,
+    SD_SPI_CS_PIN
+  );
+
+  sdCardReady = SD.begin(SD_SPI_CS_PIN, SPI, 25000000);
+
+  if (sdCardReady) {
+    Serial.println("[SD] Card mounted");
+
+    Serial.printf(
+      "[SD] /message.wav: %s\n",
+      SD.exists("/message.wav") ? "found" : "missing"
+    );
+
+    Serial.printf(
+      "[SD] /emotion.wav: %s\n",
+      SD.exists("/emotion.wav") ? "found" : "missing"
+    );
+  } else {
+    Serial.println("[SD] Card mount failed");
+  }
+
+  /*
+   * M5Unified 音量范围为 0 至 255。
+   * 首次从中等偏低音量 80 开始，避免突然过响。
+   */
+  M5.Speaker.setVolume(80);
+
 
   M5StackChan.Motion.setAutoAngleSyncEnabled(false);
   M5StackChan.Motion.setAutoTorqueReleaseEnabled(true);
