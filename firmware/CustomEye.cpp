@@ -34,13 +34,30 @@ void CustomEye::draw(M5Canvas *canvas,
     return;
   }
 
-  if (effectState_->get() == FaceEffect::HeartEyes) {
+ switch (effectState_->get()) {
+  case FaceEffect::HeartEyes:
     drawHeartEyes(canvas, rect, ctx);
     return;
-  }
 
-  // 未知效果的安全回退：保持原生眼睛。
-  normalEye_.draw(canvas, rect, ctx);
+  case FaceEffect::SparkleEyes:
+    drawSparkleEyes(canvas, rect, ctx);
+    return;
+
+  case FaceEffect::DizzyEyes:
+    drawDizzyEyes(canvas, rect, ctx);
+    return;
+
+  case FaceEffect::TearEyes:
+    drawTearEyes(canvas, rect, ctx);
+    return;
+
+  case FaceEffect::None:
+  default:
+    normalEye_.draw(canvas, rect, ctx);
+    return;
+}
+
+
 }
 
 void CustomEye::drawHeartEyes(M5Canvas *canvas,
@@ -123,6 +140,179 @@ void CustomEye::drawHeartEyes(M5Canvas *canvas,
       y - 1,
       x,
       y + bottomHeight,
+      primaryColor
+  );
+}
+
+
+void CustomEye::drawSparkleEyes(M5Canvas *canvas,
+                                m5avatar::BoundingRect rect,
+                                m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 8.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 5.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio() : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  // 闭眼时统一画横线，保留自动眨眼。
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 14, y - 2, 28, 4, primaryColor);
+    return;
+  }
+
+  /*
+   * 两个填充三角形组成四角闪光：
+   *
+   *        ▲
+   *      ◀ ◆ ▶
+   *        ▼
+   */
+  constexpr int kHalfWidth = 13;
+  constexpr int kHalfHeight = 16;
+  constexpr int kMiddleHeight = 7;
+
+  canvas->fillTriangle(
+      x,
+      y - kHalfHeight,
+      x - kHalfWidth,
+      y + kMiddleHeight,
+      x + kHalfWidth,
+      y + kMiddleHeight,
+      primaryColor
+  );
+
+  canvas->fillTriangle(
+      x,
+      y + kHalfHeight,
+      x - kHalfWidth,
+      y - kMiddleHeight,
+      x + kHalfWidth,
+      y - kMiddleHeight,
+      primaryColor
+  );
+}
+void CustomEye::drawDizzyEyes(M5Canvas *canvas,
+                              m5avatar::BoundingRect rect,
+                              m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 5.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 3.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio() : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  uint16_t backgroundColor =
+      ctx->getColorDepth() == 1
+          ? 0
+          : ctx->getColorPalette()->get(COLOR_BACKGROUND);
+
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 14, y - 2, 28, 4, primaryColor);
+    return;
+  }
+
+  /*
+   * 三层同心圆：
+   *
+   *   █████████
+   *   ██     ██
+   *   ██ ███ ██
+   *   ██ ███ ██
+   *   ██     ██
+   *   █████████
+   *
+   * 视觉上接近卡通式的“头晕 / 转圈眼”。
+   */
+  constexpr int kOuterRadius = 14;
+  constexpr int kMiddleRadius = 9;
+  constexpr int kInnerRadius = 4;
+
+  canvas->fillCircle(x, y, kOuterRadius, primaryColor);
+  canvas->fillCircle(x, y, kMiddleRadius, backgroundColor);
+  canvas->fillCircle(x, y, kInnerRadius, primaryColor);
+}
+void CustomEye::drawTearEyes(M5Canvas *canvas,
+                             m5avatar::BoundingRect rect,
+                             m5avatar::DrawContext *ctx) {
+  /*
+   * 先画原生眼睛。
+   *
+   * 因此 tear_eyes 不是完全覆盖，而是“原生 Expression + 泪滴”。
+   * 尤其适合 expression: "sad"。
+   */
+  normalEye_.draw(canvas, rect, ctx);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio() : ctx->getRightEyeOpenRatio();
+
+  // 眼睛闭合时不单独画泪滴，避免泪滴漂在闭眼横线下显得突兀。
+  if (openRatio <= 0.10f) {
+    return;
+  }
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int gazeX = static_cast<int>(gaze.getHorizontal() * 8.0f);
+
+  /*
+   * 左右眼的泪滴都画在脸中央一侧：
+   *
+   * 左眼：右下角
+   * 右眼：左下角
+   *
+   * 这样两个泪滴不会画到脸部最外缘。
+   */
+  int tearX = isLeft_
+      ? centerX + gazeX + 10
+      : centerX + gazeX - 10;
+
+  int tearY = centerY + 18;
+
+  // 泪滴上尖下圆：一个小三角形 + 一个小圆。
+  canvas->fillTriangle(
+      tearX,
+      tearY - 6,
+      tearX - 5,
+      tearY + 2,
+      tearX + 5,
+      tearY + 2,
+      primaryColor
+  );
+
+  canvas->fillCircle(
+      tearX,
+      tearY + 3,
+      5,
       primaryColor
   );
 }

@@ -18,8 +18,12 @@
  */
 enum class FaceEffect : uint8_t {
   None = 0,
-  HeartEyes
+  HeartEyes,
+  SparkleEyes,
+  DizzyEyes,
+  TearEyes
 };
+
 
 /*
  * 两只 CustomEye 共用同一个状态对象。
@@ -59,9 +63,22 @@ class CustomEye final : public m5avatar::Drawable {
             m5avatar::DrawContext *ctx) override;
 
  private:
-  void drawHeartEyes(M5Canvas *canvas,
+ void drawHeartEyes(M5Canvas *canvas,
+                   m5avatar::BoundingRect rect,
+                   m5avatar::DrawContext *ctx);
+
+void drawSparkleEyes(M5Canvas *canvas,
                      m5avatar::BoundingRect rect,
                      m5avatar::DrawContext *ctx);
+
+void drawDizzyEyes(M5Canvas *canvas,
+                   m5avatar::BoundingRect rect,
+                   m5avatar::DrawContext *ctx);
+
+void drawTearEyes(M5Canvas *canvas,
+                  m5avatar::BoundingRect rect,
+                  m5avatar::DrawContext *ctx);
+
 
   bool isLeft_;
   FaceEffectState *effectState_;

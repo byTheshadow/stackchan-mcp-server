@@ -355,30 +355,39 @@ void setExpressionByName(const char* expr) {
     avatar.setExpression(Expression::Neutral);
   }
 }
-
 void setFaceEffectByName(const char* effect) {
   if (effect == nullptr) {
     return;
   }
 
-  if (strcmp(effect, "heart_eyes") == 0) {
-    faceEffectState.set(FaceEffect::HeartEyes);
-    Serial.println("[FACE] Effect: heart_eyes");
-  } else if (strcmp(effect, "none") == 0) {
+  if (strcmp(effect, "none") == 0) {
     faceEffectState.set(FaceEffect::None);
-    Serial.println("[FACE] Effect: none");
+
+  } else if (strcmp(effect, "heart_eyes") == 0) {
+    faceEffectState.set(FaceEffect::HeartEyes);
+
+  } else if (strcmp(effect, "sparkle_eyes") == 0) {
+    faceEffectState.set(FaceEffect::SparkleEyes);
+
+  } else if (strcmp(effect, "dizzy_eyes") == 0) {
+    faceEffectState.set(FaceEffect::DizzyEyes);
+
+  } else if (strcmp(effect, "tear_eyes") == 0) {
+    faceEffectState.set(FaceEffect::TearEyes);
+
   } else {
-    /*
-     * 未知效果安全回退到原生眼睛。
-     */
     faceEffectState.set(FaceEffect::None);
 
     Serial.printf(
-      "[FACE] Unknown effect '%s', fallback to none\n",
-      effect
+        "[FACE] Unknown effect '%s', fallback to none\n",
+        effect
     );
+    return;
   }
+
+  Serial.printf("[FACE] Effect: %s\n", effect);
 }
+
 
 unsigned long clampDisplayDuration(unsigned long durationMs) {
   if (durationMs < MIN_DISPLAY_DURATION_MS) {
