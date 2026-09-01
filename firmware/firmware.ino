@@ -959,6 +959,7 @@ LedTheme getLedTheme() {
   }
 }
 
+
 void updateLedBreath() {
   const unsigned long now = millis();
 
@@ -1007,13 +1008,14 @@ void updateLedBreath() {
   if (activeSpeechText.length() > 0) {
     brightness *= SPEAKING_LIGHT_BOOST;
   }
-
   /*
    * 摸头临时灯效具有最高优先级。
    *
-   * 两次同主题色的柔和闪烁：
+   * 两次粉色柔和闪烁：
    * 亮起 -> 回落 -> 再亮起 -> 再回落。
    */
+  bool useHeadTouchPink = false;
+
   if (headTouchLightActive) {
     const unsigned long totalDuration =
         HEAD_TOUCH_LIGHT_CYCLE_MS * HEAD_TOUCH_LIGHT_FLASH_COUNT;
@@ -1024,7 +1026,7 @@ void updateLedBreath() {
     if (elapsed >= totalDuration) {
       headTouchLightActive = false;
 
-      Serial.println("[LED] Head-touch soft flash finished");
+      Serial.println("[LED] Head-touch pink flash finished");
     } else {
       const unsigned long cycleElapsed =
           elapsed % HEAD_TOUCH_LIGHT_CYCLE_MS;
@@ -1039,26 +1041,53 @@ void updateLedBreath() {
       const float flashWave =
           sinf(cyclePhase * 3.14159265f);
 
+      /*
+       * 摸头时使用固定粉色，并且不再使用当前表情主题色。
+       *
+       * 粉色 RGB：
+       * R = 255
+       * G = 45
+       * B = 150
+       */
+      useHeadTouchPink = true;
+
+      /*
+       * 粉色灯效使用独立亮度，避免被当前主题的
+       * maxBrightness 限制得太暗。
+       */
       brightness =
-          maxBrightness * (0.35f + flashWave * 0.65f);
+          (220.0f / 255.0f) *
+          (0.35f + flashWave * 0.65f);
     }
   }
 
   /*
-   * 防止文字增强后超过 RGB 可用范围。
+   * 防止亮度超过 RGB 可用范围。
    */
   if (brightness > 1.0f) {
     brightness = 1.0f;
   }
 
-  const uint8_t r =
-      static_cast<uint8_t>(theme.r * brightness);
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
 
-  const uint8_t g =
-      static_cast<uint8_t>(theme.g * brightness);
-
-  const uint8_t b =
-      static_cast<uint8_t>(theme.b * brightness);
+  if (useHeadTouchPink) {
+    /*
+     * 固定粉色摸头灯效。
+     */
+    r = static_cast<uint8_t>(255.0f * brightness);
+    g = static_cast<uint8_t>(45.0f * brightness);
+    b = static_cast<uint8_t>(150.0f * brightness);
+  } else {
+    /*
+     * 非摸头期间，恢复原来的 expression /
+     * face_effect 主题色呼吸灯。
+     */
+    r = static_cast<uint8_t>(theme.r * brightness);
+    g = static_cast<uint8_t>(theme.g * brightness);
+    b = static_cast<uint8_t>(theme.b * brightness);
+  }
 
   for (uint8_t i = 0; i < LED_COUNT; ++i) {
     M5StackChan.setRgbColor(i, r, g, b);
