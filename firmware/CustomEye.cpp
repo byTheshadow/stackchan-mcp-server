@@ -34,28 +34,49 @@ void CustomEye::draw(M5Canvas *canvas,
     return;
   }
 
- switch (effectState_->get()) {
-  case FaceEffect::HeartEyes:
-    drawHeartEyes(canvas, rect, ctx);
-    return;
+  switch (effectState_->get()) {
+    case FaceEffect::HeartEyes:
+      drawHeartEyes(canvas, rect, ctx);
+      return;
 
-  case FaceEffect::SparkleEyes:
-    drawSparkleEyes(canvas, rect, ctx);
-    return;
+    case FaceEffect::SparkleEyes:
+      drawSparkleEyes(canvas, rect, ctx);
+      return;
 
-  case FaceEffect::DizzyEyes:
-    drawDizzyEyes(canvas, rect, ctx);
-    return;
+    case FaceEffect::DizzyEyes:
+      drawDizzyEyes(canvas, rect, ctx);
+      return;
 
-  case FaceEffect::TearEyes:
-    drawTearEyes(canvas, rect, ctx);
-    return;
+    case FaceEffect::TearEyes:
+      drawTearEyes(canvas, rect, ctx);
+      return;
 
-  case FaceEffect::None:
-  default:
-    normalEye_.draw(canvas, rect, ctx);
-    return;
-}
+    case FaceEffect::SurprisedFace:
+      drawSurprisedFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::PoutFace:
+      drawPoutFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::ShyFace:
+      drawShyFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::SmugFace:
+      drawSmugFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::ConfusedFace:
+      drawConfusedFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::None:
+    default:
+      normalEye_.draw(canvas, rect, ctx);
+      return;
+  }
+
 
 
 }

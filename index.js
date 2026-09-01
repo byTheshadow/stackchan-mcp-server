@@ -245,11 +245,19 @@ const controlRobotTool = {
   'heart_eyes',
   'sparkle_eyes',
   'dizzy_eyes',
-  'tear_eyes'
+  'tear_eyes',
+  'surprised_face',
+  'pout_face',
+  'shy_face',
+  'smug_face',
+  'confused_face'
 ],
 
-      description:
-  '可选的自定义图形眼睛效果。none 使用与 expression 对应的原生眼睛；heart_eyes 为爱心眼，适合喜爱、感谢和热烈欢迎；sparkle_eyes 为闪光星眼，适合惊喜、期待和赞叹；dizzy_eyes 为眩晕同心圆眼，适合迷糊、信息过载或头晕；tear_eyes 为原生眼睛加泪滴，适合感动、遗憾、委屈或道歉。expression 仍会控制原生嘴巴和眉毛。通常应使用 none，只有语境明显需要时才使用自定义效果。'
+
+      
+  description:
+  '可选的自定义脸部效果。none 使用原生眼睛、嘴巴和眉毛；heart_eyes 为爱心眼；sparkle_eyes 为闪光眼；dizzy_eyes 为眩晕眼；tear_eyes 为泪眼；surprised_face 为惊讶大圆眼和 O 嘴；pout_face 为嘟嘴；shy_face 为害羞小眼、微笑嘴和腮红；smug_face 为得意歪嘴和挑眉；confused_face 为一大一小的困惑眼和挑眉。通常使用 none，只有语境明显需要时才使用自定义效果。'
+
 
       },
 
@@ -353,13 +361,19 @@ function normalizeRobotArguments(args = {}) {
     'neutral'
   ];
 
- const allowedFaceEffects = [
+const allowedFaceEffects = [
   'none',
   'heart_eyes',
   'sparkle_eyes',
   'dizzy_eyes',
-  'tear_eyes'
+  'tear_eyes',
+  'surprised_face',
+  'pout_face',
+  'shy_face',
+  'smug_face',
+  'confused_face'
 ];
+
 
 
   const allowedMotions = [

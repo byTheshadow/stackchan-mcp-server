@@ -16,6 +16,9 @@
 #include <SD.h>
 
 #include "CustomEye.h"
+#include "CustomMouth.h"
+#include "CustomEyeblow.h"
+
 
 using namespace m5avatar;
 
@@ -44,11 +47,12 @@ FaceEffectState faceEffectState;
  */
 Avatar avatar(
   new Face(
-    new Mouth(50, 90, 4, 60),
-    new CustomEye(false, &faceEffectState),  // 右眼
-    new CustomEye(true, &faceEffectState),   // 左眼
-    new Eyeblow(32, 0, false),               // 右眉
-    new Eyeblow(32, 0, true)                 // 左眉
+  new CustomMouth(&faceEffectState),
+new CustomEye(false, &faceEffectState),  // 右眼
+new CustomEye(true, &faceEffectState),   // 左眼
+new CustomEyeblow(false, &faceEffectState), // 右眉
+new CustomEyeblow(true, &faceEffectState)   // 左眉
+
   )
 );
 
@@ -374,6 +378,21 @@ void setFaceEffectByName(const char* effect) {
 
   } else if (strcmp(effect, "tear_eyes") == 0) {
     faceEffectState.set(FaceEffect::TearEyes);
+      } else if (strcmp(effect, "surprised_face") == 0) {
+    faceEffectState.set(FaceEffect::SurprisedFace);
+
+  } else if (strcmp(effect, "pout_face") == 0) {
+    faceEffectState.set(FaceEffect::PoutFace);
+
+  } else if (strcmp(effect, "shy_face") == 0) {
+    faceEffectState.set(FaceEffect::ShyFace);
+
+  } else if (strcmp(effect, "smug_face") == 0) {
+    faceEffectState.set(FaceEffect::SmugFace);
+
+  } else if (strcmp(effect, "confused_face") == 0) {
+    faceEffectState.set(FaceEffect::ConfusedFace);
+
 
   } else {
     faceEffectState.set(FaceEffect::None);
