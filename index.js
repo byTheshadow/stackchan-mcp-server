@@ -214,11 +214,12 @@ function normalizeDisplayDuration(value) {
   );
 }
 
+
 const controlRobotTool = {
   name: 'control_robot',
 
   description:
-    '控制你的 StackChan 实体身体。你可以根据当前对话、情绪和互动语境，自主选择基础图形表情、自定义眼睛效果、简短英文文字和 ASCII 颜文字，并执行已经过实体验证的 nod（点头）或 home（回到正中）。不要使用未提供的动作、表情、自定义效果或声音。',
+    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。请让实体反馈服务于当前语境，不要为每一句普通对话都播放声音、执行动作或显示文字。仅可使用参数枚举中明确提供的值；目前尚未支持摇晃、摇头、侧倾、跳舞、TTS、录音或自定义灯光命令。',
 
   inputSchema: {
     type: 'object',
@@ -235,32 +236,31 @@ const controlRobotTool = {
           'neutral'
         ],
         description:
-          '实体身体的基础图形表情。happy=开心、友好、感谢；sad=难过、遗憾、安慰；angry=不满、认真或强调；doubt=疑惑、思考、不确定；sleepy=困倦、晚安或休息；neutral=平静、默认状态。只能使用提供的枚举值。'
+          '必填。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。happy=开心、友好、庆祝、感谢；sad=难过、遗憾、安慰；angry=不满、严肃、强调；doubt=疑惑、思考、不确定；sleepy=困倦、晚安、休息；neutral=平静、默认或不希望突出情绪。'
       },
 
-     face_effect: {
-  type: 'string',
-  enum: [
-    'none',
-    'heart_eyes',
-    'sparkle_eyes',
-    'dizzy_eyes',
-    'tear_eyes',
-    'surprised_face',
-    'pout_face',
-    'shy_face',
-    'smug_face',
-    'confused_face',
-    'laugh_face',
-    'kiss_face',
-    'nervous_face',
-    'relieved_face',
-    'determined_face'
-  ],
-  description:
-    '可选的自定义脸部效果。none 使用原生眼睛、嘴巴和眉毛；heart_eyes 为爱心眼；sparkle_eyes 为闪光眼；dizzy_eyes 为眩晕眼；tear_eyes 为泪眼；surprised_face 为惊讶大圆眼和 O 嘴；pout_face 为嘟嘴；shy_face 为害羞小眼、微笑嘴和腮红；smug_face 为得意歪嘴和挑眉；confused_face 为一大一小的困惑眼和挑眉；laugh_face 为弯月笑眼和张嘴大笑；kiss_face 为原生眼与圆形嘟嘴；nervous_face 为小圆眼、波浪嘴与高低眉；relieved_face 为放松闭眼和宽笑嘴；determined_face 为压缩眼、压低眉和坚定平嘴。通常使用 none，只有语境明显需要时才使用自定义效果。'
-},
-
+      face_effect: {
+        type: 'string',
+        enum: [
+          'none',
+          'heart_eyes',
+          'sparkle_eyes',
+          'dizzy_eyes',
+          'tear_eyes',
+          'surprised_face',
+          'pout_face',
+          'shy_face',
+          'smug_face',
+          'confused_face',
+          'laugh_face',
+          'kiss_face',
+          'nervous_face',
+          'relieved_face',
+          'determined_face'
+        ],
+        description:
+          '可选的强化脸部效果，不等同于基础情绪。none=原生眼睛、嘴巴和眉毛，也是通常默认选择；heart_eyes=喜爱、感动；sparkle_eyes=期待、赞叹；dizzy_eyes=眩晕、信息过载；tear_eyes=难过、感动落泪；surprised_face=明显惊讶；pout_face=轻微不满、撒娇；shy_face=害羞；smug_face=得意、俏皮；confused_face=困惑；laugh_face=大笑；kiss_face=飞吻、亲昵回应；nervous_face=紧张、尴尬；relieved_face=松一口气、安心；determined_face=认真、下定决心。通常使用 none；只在语境明确需要强调时才选其他效果，避免长期停留在夸张表情。'
+      },
 
       motion: {
         type: 'string',
@@ -270,14 +270,14 @@ const controlRobotTool = {
           'none'
         ],
         description:
-          '机器人动作：nod 为点头一次且自动回中；home 为立即回到正中；none 为不执行动作。'
+          '可选的一次性舵机动作。nod=点头一次，随后自动回到正中；home=立即回到正中，适合在先前动作后复位；none=不执行动作。动作有机械运动和噪声，不要在每句话或短时间内重复触发。目前不支持 shake、tilt、look、dance 或自定义动作序列。'
       },
 
       text_to_display: {
         type: 'string',
         maxLength: 80,
         description:
-          '可选。显示在实体身体屏幕上的简短文字或 ASCII 颜文字。建议根据对话和情绪选择自然、简短的内容，而不是固定使用同一句话。最多 80 个字符。示例："^_^ Hi!"、"I am here :)"、"Yay! \\\\o/"、"Hmm... o_O"、"Thank you! <3"、"Sorry... T_T"、"Good night... z_z"。'
+          '可选。显示在实体屏幕上的极简短文字或 ASCII 颜文字，最多 80 个字符。适合问候、感谢、关键情绪反馈或短提示，不应用来逐字复述长回复。推荐优先使用短英文、数字、ASCII 颜文字；中文实际显示效果取决于固件字体。示例："^_^ Hi!"、"Yay! \\o/"、"Hmm... o_O"、"Thank you! <3"、"Sorry... T_T"、"Good night... z_z"。传入空字符串会清除当前文字。'
       },
 
       display_duration_ms: {
@@ -285,13 +285,13 @@ const controlRobotTool = {
         minimum: 1000,
         maximum: 10000,
         description:
-          '可选。文字在实体身体屏幕上停留的时间，单位为毫秒。范围为 1000 至 10000，默认 5000。'
+          '可选。text_to_display 的显示时长，单位毫秒；范围 1000～10000，默认 5000。仅在传入 text_to_display 时生效。'
       },
 
       text_to_speak: {
         type: 'string',
         description:
-          '保留给未来 TTS 使用。目前机器人 TTS 尚未接入，此字段会安全忽略；请使用 text_to_display 显示屏幕文字。'
+          '为未来 TTS 预留。目前机器人没有接入 TTS，此字段会被安全忽略；若需要实体文字反馈，请使用 text_to_display。'
       },
 
       sound: {
@@ -302,7 +302,7 @@ const controlRobotTool = {
           'emotion'
         ],
         description:
-          '可选。播放 SD 卡中的短 WAV 提示音：message 为收到新消息提示；emotion 为情绪回应提示；none 为不播放。'
+          '可选。播放 SD 卡中已验证的短 WAV 提示音。message=收到重要消息或需要吸引注意时的提示；emotion=明显情绪回应、庆祝或安慰时的提示；none=不播放。声音会打断环境安静感，不要对每条回复播放，也不要连续重复播放。'
       }
     },
 
@@ -315,8 +315,10 @@ const controlRobotTool = {
 const getRobotEventsTool = {
   name: 'get_robot_events',
 
-  description:
-    '读取 StackChan 实体身体尚未处理的近期感应事件。当前支持 touch_tap 和 head_touch。每条事件提供 received_at 和 seconds_ago。读取不会自动删除事件；角色处理后应调用 acknowledge_robot_events，避免未来重复提及。',
+
+     description:
+    '读取 StackChan 实体身体尚未处理的近期互动事件。当前仅支持 touch_tap（用户触摸屏幕）与 head_touch（用户摸头顶）；head_touch 在实体端会先执行粉色柔和双闪。每条事件提供 received_at、seconds_ago，以及屏幕触摸事件的 x、y 坐标。读取不会删除事件；角色结合语境处理后，应调用 acknowledge_robot_events 确认，避免重复提及。当前尚未支持 shake、语音活动或音频事件。',
+
 
   inputSchema: {
     type: 'object',
@@ -525,8 +527,9 @@ app.post('/mcp', (req, res) => {
         version: '1.3.0'
       },
 
-      instructions:
-        '此服务负责 StackChan 实体身体的上下行中继。可控制基础表情、自定义眼睛效果、短文字、nod、home；也可读取和确认近期实体触摸事件。'
+     instructions:
+  '此服务负责 StackChan 实体身体的上下行中继。当前可控制基础表情、可选脸部效果、短屏幕文字、nod、home 和两种短提示音；也可读取并确认 touch_tap、head_touch 实体事件。灯光由固件依据表情和本地互动自动控制。当前不支持摇晃感应、跳舞、其他舵机动作、TTS、麦克风或音频上传。'
+
     };
 
     return res
