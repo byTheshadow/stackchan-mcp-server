@@ -11,8 +11,12 @@ app.use(express.json({ limit: '64kb' }));
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// 当前在线的机器人连接。
-// 目前仅支持一台机器人；未来可用 robot_id 扩展多台。
+/*
+ * 当前在线的机器人连接。
+ *
+ * 目前仅支持一台机器人；
+ * 未来可通过 robot_id 扩展多台。
+ */
 let robotSocket = null;
 
 /*
@@ -22,16 +26,24 @@ let robotSocket = null;
  * - 最多 50 条；
  * - 24 小时后过期；
  * - Render 重启后会清空；
- * - 角色 A 处理完成后应调用 acknowledge_robot_events 确认。
+ * - 角色处理完成后应调用 acknowledge_robot_events 确认。
  */
 const pendingRobotEvents = [];
+
 const MAX_PENDING_EVENTS = 50;
 const EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 
+/*
+ * 清理超过保存期限的实体事件。
+ */
 function pruneExpiredRobotEvents() {
   const now = Date.now();
 
-  for (let index = pendingRobotEvents.length - 1; index >= 0; index--) {
+  for (
+    let index = pendingRobotEvents.length - 1;
+    index >= 0;
+    index--
+  ) {
     const event = pendingRobotEvents[index];
     const receivedAtMs = Date.parse(event.received_at);
 
@@ -44,12 +56,18 @@ function pruneExpiredRobotEvents() {
   }
 }
 
+/*
+ * 生成实体事件 ID。
+ */
 function makeRobotEventId() {
   return `evt_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 8)}`;
 }
 
+/*
+ * 添加机器人实体事件到待处理队列。
+ */
 function addRobotEvent(rawEvent) {
   pruneExpiredRobotEvents();
 
@@ -74,6 +92,9 @@ function addRobotEvent(rawEvent) {
   return event;
 }
 
+/*
+ * 获取当前未处理的实体事件。
+ */
 function getPendingRobotEvents() {
   pruneExpiredRobotEvents();
 
@@ -92,13 +113,20 @@ function getPendingRobotEvents() {
   });
 }
 
+/*
+ * 确认并删除指定的实体事件。
+ */
 function acknowledgeRobotEvents(eventIds) {
   pruneExpiredRobotEvents();
 
   const idSet = new Set(eventIds);
   let acknowledged = 0;
 
-  for (let index = pendingRobotEvents.length - 1; index >= 0; index--) {
+  for (
+    let index = pendingRobotEvents.length - 1;
+    index >= 0;
+    index--
+  ) {
     if (idSet.has(pendingRobotEvents[index].id)) {
       pendingRobotEvents.splice(index, 1);
       acknowledged++;
@@ -108,8 +136,14 @@ function acknowledgeRobotEvents(eventIds) {
   return acknowledged;
 }
 
+/*
+ * StackChan 实体设备 WebSocket 连接。
+ */
 wss.on('connection', (ws, req) => {
-  console.log(`✅ StackChan 机器人已连接：${req.socket.remoteAddress}`);
+  console.log(
+    `✅ StackChan 机器人已连接：${req.socket.remoteAddress}`
+  );
+
   robotSocket = ws;
 
   ws.on('message', (message) => {
@@ -122,13 +156,16 @@ wss.on('connection', (ws, req) => {
     try {
       data = JSON.parse(text);
     } catch {
-      // 机器人偶尔发送的非 JSON 调试内容仅记录日志，不作为事件处理。
+      /*
+       * 机器人偶尔发送的非 JSON 调试内容仅记录日志，
+       * 不作为事件处理。
+       */
       return;
     }
 
     /*
-     * 第一版只接受 touch_tap 和 head_touch。
-     * 不能让机器人任意上报内容写入事件队列。
+     * 只接受经过明确验证的实体事件，
+     * 避免任意内容写入事件队列。
      */
     const isScreenTouchEvent =
       data &&
@@ -144,7 +181,23 @@ wss.on('connection', (ws, req) => {
       data.event === 'head_touch' &&
       Number.isFinite(data.at_ms);
 
-    if (isScreenTouchEvent || isHeadTouchEvent) {
+    /*
+     * shake 表示用户摇晃了实体机器人。
+     *
+     * 该事件由固件 IMU 检测后上报，
+     * 不表示机器人主动执行 shake_head 舵机动作。
+     */
+    const isShakeEvent =
+      data &&
+      data.type === 'robot_event' &&
+      data.event === 'shake' &&
+      Number.isFinite(data.at_ms);
+
+    if (
+      isScreenTouchEvent ||
+      isHeadTouchEvent ||
+      isShakeEvent
+    ) {
       addRobotEvent(data);
     }
   });
@@ -158,10 +211,16 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('error', (error) => {
-    console.error('机器人 WebSocket 错误：', error.message);
+    console.error(
+      '机器人 WebSocket 错误：',
+      error.message
+    );
   });
 });
 
+/*
+ * JSON-RPC 成功响应。
+ */
 function jsonRpcSuccess(id, result) {
   return {
     jsonrpc: '2.0',
@@ -170,8 +229,14 @@ function jsonRpcSuccess(id, result) {
   };
 }
 
+/*
+ * JSON-RPC 错误响应。
+ */
 function jsonRpcError(id, code, message, data) {
-  const error = { code, message };
+  const error = {
+    code,
+    message
+  };
 
   if (data !== undefined) {
     error.data = data;
@@ -184,14 +249,17 @@ function jsonRpcError(id, code, message, data) {
   };
 }
 
+/*
+ * 清理显示文字。
+ */
 function sanitizeDisplayText(value) {
   if (typeof value !== 'string') {
     return '';
   }
 
   /*
-   * 去除可能破坏 JSON 的控制字符。
-   * 保留中文和 Unicode；实际显示能力由固件字体决定。
+   * 去除可能破坏 JSON 或显示的控制字符。
+   * 保留中文及 Unicode。
    * 最多 80 个字符。
    */
   return value
@@ -199,6 +267,9 @@ function sanitizeDisplayText(value) {
     .slice(0, 80);
 }
 
+/*
+ * 标准化显示时长。
+ */
 function normalizeDisplayDuration(value) {
   const defaultDurationMs = 5000;
   const minDurationMs = 1000;
@@ -214,12 +285,14 @@ function normalizeDisplayDuration(value) {
   );
 }
 
-
+/*
+ * MCP：控制机器人实体身体。
+ */
 const controlRobotTool = {
   name: 'control_robot',
 
   description:
-    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。请让实体反馈服务于当前语境，不要为每一句普通对话都播放声音、执行动作或显示文字。仅可使用参数枚举中明确提供的值；目前尚未支持摇晃、摇头、侧倾、跳舞、TTS、录音或自定义灯光命令。',
+    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证的保守舵机动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。请让实体反馈服务于当前语境，不要为每一句普通对话都播放声音、执行动作或显示文字。仅可使用参数枚举中明确提供的值。当前支持 nod、shake_head、look_left、look_right、tilt_up、tilt_down、home 和 none；不支持任意角度、自定义动作序列、跳舞、TTS、录音或自定义灯光命令。注意：shake 是用户摇晃实体后由 IMU 上报的事件，不是机器人主动动作，不能通过本工具触发。',
 
   inputSchema: {
     type: 'object',
@@ -227,6 +300,7 @@ const controlRobotTool = {
     properties: {
       expression: {
         type: 'string',
+
         enum: [
           'happy',
           'sad',
@@ -235,12 +309,14 @@ const controlRobotTool = {
           'sleepy',
           'neutral'
         ],
+
         description:
           '必填。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。happy=开心、友好、庆祝、感谢；sad=难过、遗憾、安慰；angry=不满、严肃、强调；doubt=疑惑、思考、不确定；sleepy=困倦、晚安、休息；neutral=平静、默认或不希望突出情绪。'
       },
 
       face_effect: {
         type: 'string',
+
         enum: [
           'none',
           'heart_eyes',
@@ -258,24 +334,33 @@ const controlRobotTool = {
           'relieved_face',
           'determined_face'
         ],
+
         description:
           '可选的强化脸部效果，不等同于基础情绪。none=原生眼睛、嘴巴和眉毛，也是通常默认选择；heart_eyes=喜爱、感动；sparkle_eyes=期待、赞叹；dizzy_eyes=眩晕、信息过载；tear_eyes=难过、感动落泪；surprised_face=明显惊讶；pout_face=轻微不满、撒娇；shy_face=害羞；smug_face=得意、俏皮；confused_face=困惑；laugh_face=大笑；kiss_face=飞吻、亲昵回应；nervous_face=紧张、尴尬；relieved_face=松一口气、安心；determined_face=认真、下定决心。通常使用 none；只在语境明确需要强调时才选其他效果，避免长期停留在夸张表情。'
       },
 
       motion: {
         type: 'string',
+
         enum: [
           'nod',
+          'shake_head',
+          'look_left',
+          'look_right',
+          'tilt_up',
+          'tilt_down',
           'home',
           'none'
         ],
+
         description:
-          '可选的一次性舵机动作。nod=点头一次，随后自动回到正中；home=立即回到正中，适合在先前动作后复位；none=不执行动作。动作有机械运动和噪声，不要在每句话或短时间内重复触发。目前不支持 shake、tilt、look、dance 或自定义动作序列。'
+          '可选的一次性舵机动作。nod=点头一次；shake_head=小幅左右摇头；look_left/look_right=小幅向左或向右看；tilt_up/tilt_down=小幅抬头或低头；home=立即回到正中；none=不执行动作。动作会产生机械运动和声音，不要在每句话或短时间内重复触发。当前动作均为保守测试动作，不支持任意角度或自定义动作序列。'
       },
 
       text_to_display: {
         type: 'string',
         maxLength: 80,
+
         description:
           '可选。显示在实体屏幕上的极简短文字或 ASCII 颜文字，最多 80 个字符。适合问候、感谢、关键情绪反馈或短提示，不应用来逐字复述长回复。推荐优先使用短英文、数字、ASCII 颜文字；中文实际显示效果取决于固件字体。示例："^_^ Hi!"、"Yay! \\o/"、"Hmm... o_O"、"Thank you! <3"、"Sorry... T_T"、"Good night... z_z"。传入空字符串会清除当前文字。'
       },
@@ -284,23 +369,27 @@ const controlRobotTool = {
         type: 'integer',
         minimum: 1000,
         maximum: 10000,
+
         description:
           '可选。text_to_display 的显示时长，单位毫秒；范围 1000～10000，默认 5000。仅在传入 text_to_display 时生效。'
       },
 
       text_to_speak: {
         type: 'string',
+
         description:
           '为未来 TTS 预留。目前机器人没有接入 TTS，此字段会被安全忽略；若需要实体文字反馈，请使用 text_to_display。'
       },
 
       sound: {
         type: 'string',
+
         enum: [
           'none',
           'message',
           'emotion'
         ],
+
         description:
           '可选。播放 SD 卡中已验证的短 WAV 提示音。message=收到重要消息或需要吸引注意时的提示；emotion=明显情绪回应、庆祝或安慰时的提示；none=不播放。声音会打断环境安静感，不要对每条回复播放，也不要连续重复播放。'
       }
@@ -312,13 +401,14 @@ const controlRobotTool = {
   }
 };
 
+/*
+ * MCP：读取实体事件。
+ */
 const getRobotEventsTool = {
   name: 'get_robot_events',
 
-
-     description:
-    '读取 StackChan 实体身体尚未处理的近期互动事件。当前仅支持 touch_tap（用户触摸屏幕）与 head_touch（用户摸头顶）；head_touch 在实体端会先执行粉色柔和双闪。每条事件提供 received_at、seconds_ago，以及屏幕触摸事件的 x、y 坐标。读取不会删除事件；角色结合语境处理后，应调用 acknowledge_robot_events 确认，避免重复提及。当前尚未支持 shake、语音活动或音频事件。',
-
+  description:
+    '读取 StackChan 实体身体尚未处理的近期互动事件。当前支持 touch_tap（用户触摸屏幕）、head_touch（用户摸头顶）和 shake（用户摇晃实体机器人）。head_touch 在实体端会先执行粉色柔和双闪；shake 只表示 IMU 检测到用户摇晃，不会自动触发舵机动作。每条事件提供 received_at、seconds_ago，以及屏幕触摸事件的 x、y 坐标。读取不会删除事件；角色结合语境处理后，应调用 acknowledge_robot_events 确认，避免重复提及。',
 
   inputSchema: {
     type: 'object',
@@ -326,6 +416,9 @@ const getRobotEventsTool = {
   }
 };
 
+/*
+ * MCP：确认实体事件。
+ */
 const acknowledgeRobotEventsTool = {
   name: 'acknowledge_robot_events',
 
@@ -338,11 +431,14 @@ const acknowledgeRobotEventsTool = {
     properties: {
       event_ids: {
         type: 'array',
+
         items: {
           type: 'string'
         },
+
         minItems: 1,
         maxItems: 50,
+
         description:
           '要确认并删除的事件 ID 列表；ID 来自 get_robot_events。'
       }
@@ -354,6 +450,11 @@ const acknowledgeRobotEventsTool = {
   }
 };
 
+/*
+ * 标准化并限制机器人控制参数。
+ *
+ * 不能直接将任意调用参数转发给固件。
+ */
 function normalizeRobotArguments(args = {}) {
   const allowedExpressions = [
     'happy',
@@ -364,28 +465,31 @@ function normalizeRobotArguments(args = {}) {
     'neutral'
   ];
 
-const allowedFaceEffects = [
-  'none',
-  'heart_eyes',
-  'sparkle_eyes',
-  'dizzy_eyes',
-  'tear_eyes',
-  'surprised_face',
-  'pout_face',
-  'shy_face',
-  'smug_face',
-  'confused_face',
-  'laugh_face',
-  'kiss_face',
-  'nervous_face',
-  'relieved_face',
-  'determined_face'
-];
-
-
+  const allowedFaceEffects = [
+    'none',
+    'heart_eyes',
+    'sparkle_eyes',
+    'dizzy_eyes',
+    'tear_eyes',
+    'surprised_face',
+    'pout_face',
+    'shy_face',
+    'smug_face',
+    'confused_face',
+    'laugh_face',
+    'kiss_face',
+    'nervous_face',
+    'relieved_face',
+    'determined_face'
+  ];
 
   const allowedMotions = [
     'nod',
+    'shake_head',
+    'look_left',
+    'look_right',
+    'tilt_up',
+    'tilt_down',
     'home',
     'none'
   ];
@@ -404,8 +508,8 @@ const allowedFaceEffects = [
     /*
      * 默认使用 none。
      *
-     * 这样旧版调用即使没有传 face_effect，
-     * 也会恢复原生眼睛，而不是意外保留旧的爱心眼状态。
+     * 即使旧调用没有传 face_effect，
+     * 也会恢复原生眼睛，而不会意外保留旧状态。
      */
     face_effect: allowedFaceEffects.includes(args.face_effect)
       ? args.face_effect
@@ -422,7 +526,7 @@ const allowedFaceEffects = [
 
   /*
    * 只有调用方明确传入 text_to_display 时才发送文字字段，
-   * 以保证旧调用不会清除当前文字。
+   * 以保证旧调用不会清除当前屏幕文字。
    */
   if (typeof args.text_to_display === 'string') {
     normalized.text_to_display = sanitizeDisplayText(
@@ -437,17 +541,24 @@ const allowedFaceEffects = [
   return normalized;
 }
 
+/*
+ * 向在线机器人发送控制指令。
+ */
 function sendRobotControl(args = {}) {
   const payload = {
     action: 'speak',
     ...normalizeRobotArguments(args)
   };
 
-  if (!robotSocket || robotSocket.readyState !== WebSocket.OPEN) {
+  if (
+    !robotSocket ||
+    robotSocket.readyState !== WebSocket.OPEN
+  ) {
     return {
       ok: false,
       status: 503,
-      error: 'Robot is offline. Please check Wi-Fi and WebSocket connection.'
+      error:
+        'Robot is offline. Please check Wi-Fi and WebSocket connection.'
     };
   }
 
@@ -461,6 +572,9 @@ function sendRobotControl(args = {}) {
   };
 }
 
+/*
+ * 将实体事件转换为给模型阅读的文字。
+ */
 function formatRobotEventsText(events) {
   if (events.length === 0) {
     return '没有尚未处理的实体事件。';
@@ -475,6 +589,10 @@ function formatRobotEventsText(events) {
       return `- 用户在 ${event.seconds_ago} 秒前摸了 StackChan 的头顶一次（事件 ID：${event.id}）。`;
     }
 
+    if (event.event === 'shake') {
+      return `- 用户在 ${event.seconds_ago} 秒前摇晃了 StackChan 一次（事件 ID：${event.id}）。`;
+    }
+
     return `- 未知实体事件：${event.event}（事件 ID：${event.id}）。`;
   });
 
@@ -484,8 +602,8 @@ function formatRobotEventsText(events) {
 /*
  * 标准 MCP Streamable HTTP 入口。
  *
- * PWA 地址：
- * https://stackchan-mcp-server.onrender.com/mcp
+ * 示例：
+ * https://你的-render域名.onrender.com/mcp
  */
 app.post('/mcp', (req, res) => {
   const request = req.body;
@@ -512,11 +630,14 @@ app.post('/mcp', (req, res) => {
 
   console.log(`MCP request: ${method}`);
 
-  const isNotification = id === undefined || id === null;
+  const isNotification =
+    id === undefined ||
+    id === null;
 
   if (method === 'initialize') {
     const result = {
-      protocolVersion: params.protocolVersion || '2025-03-26',
+      protocolVersion:
+        params.protocolVersion || '2025-03-26',
 
       capabilities: {
         tools: {}
@@ -524,12 +645,11 @@ app.post('/mcp', (req, res) => {
 
       serverInfo: {
         name: 'stackchan-robot-relay',
-        version: '1.3.0'
+        version: '1.4.0'
       },
 
-     instructions:
-  '此服务负责 StackChan 实体身体的上下行中继。当前可控制基础表情、可选脸部效果、短屏幕文字、nod、home 和两种短提示音；也可读取并确认 touch_tap、head_touch 实体事件。灯光由固件依据表情和本地互动自动控制。当前不支持摇晃感应、跳舞、其他舵机动作、TTS、麦克风或音频上传。'
-
+      instructions:
+        '此服务负责 StackChan 实体身体的上下行中继。当前可控制基础表情、可选脸部效果、短屏幕文字、nod、shake_head、look_left、look_right、tilt_up、tilt_down、home 和两种短提示音；也可读取并确认 touch_tap、head_touch、shake 实体事件。shake 表示用户摇晃了机器人后由 IMU 上报，并非机器人主动舵机动作。灯光由固件依据表情和本地互动自动控制。当前不支持跳舞、任意角度动作、自定义动作序列、TTS、麦克风或音频上传。'
     };
 
     return res
@@ -607,7 +727,7 @@ app.post('/mcp', (req, res) => {
                 type: 'text',
 
                 text:
-                  `机器人已收到指令：` +
+                  '机器人已收到指令：' +
                   `表情=${expression}，` +
                   `眼睛效果=${faceEffect}，` +
                   `动作=${motion}，` +
@@ -642,13 +762,16 @@ app.post('/mcp', (req, res) => {
     }
 
     if (params.name === 'acknowledge_robot_events') {
-      const eventIds = params.arguments?.event_ids;
+      const eventIds =
+        params.arguments?.event_ids;
 
       if (
         !Array.isArray(eventIds) ||
         eventIds.length === 0 ||
         eventIds.length > 50 ||
-        !eventIds.every((item) => typeof item === 'string')
+        !eventIds.every(
+          (item) => typeof item === 'string'
+        )
       ) {
         return res
           .status(200)
@@ -720,22 +843,31 @@ app.post('/mcp', (req, res) => {
     );
 });
 
+/*
+ * GET /mcp 不支持，只接受 POST JSON-RPC。
+ */
 app.get('/mcp', (req, res) => {
   res
     .status(405)
     .set('Allow', 'POST')
     .type('text')
-    .send('This MCP endpoint accepts POST JSON-RPC requests.');
+    .send(
+      'This MCP endpoint accepts POST JSON-RPC requests.'
+    );
 });
 
-// 健康检查
+/*
+ * 健康检查。
+ */
 app.get('/', (req, res) => {
   res
     .type('text')
     .send('StackChan relay server is running.');
 });
 
-// 旧工具说明接口
+/*
+ * 旧版工具说明接口，保留兼容性。
+ */
 app.get('/mcp/tools', (req, res) => {
   res.json({
     tools: [
@@ -746,7 +878,9 @@ app.get('/mcp/tools', (req, res) => {
   });
 });
 
-// 旧自定义控制接口，继续保留。
+/*
+ * 旧版自定义控制接口，继续保留兼容性。
+ */
 app.post('/mcp/call', (req, res) => {
   const {
     tool,
@@ -801,8 +935,11 @@ app.post('/mcp/call', (req, res) => {
 });
 
 /*
- * 仅供当前浏览器控制台手工测试的临时事件接口。
- * PWA 正式集成时请使用 MCP 工具，不需要依赖这两个 HTTP 路由。
+ * 临时实体事件调试接口。
+ *
+ * PWA 或模型正式集成时应优先使用 MCP 工具：
+ * - get_robot_events
+ * - acknowledge_robot_events
  */
 app.get('/robot/events', (req, res) => {
   res.json({
@@ -815,7 +952,9 @@ app.post('/robot/events/ack', (req, res) => {
 
   if (
     !Array.isArray(eventIds) ||
-    !eventIds.every((item) => typeof item === 'string')
+    !eventIds.every(
+      (item) => typeof item === 'string'
+    )
   ) {
     return res
       .status(400)
