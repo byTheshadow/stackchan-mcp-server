@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <M5StackChan.h>
+#include <math.h>
+
 
 #include <Avatar.h>
 #include <Eyeblow.h>
@@ -32,6 +34,31 @@ using namespace m5avatar;
  *   使用自定义爱心眼。
  */
 FaceEffectState faceEffectState;
+/*
+ * RGB 灯光控制。
+ *
+ * 0~5  ：左侧 6 颗灯
+ * 6~11 ：右侧 6 颗灯
+ */
+struct LedTheme {
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+  uint8_t maxBrightness;
+  uint16_t periodMs;
+};
+
+LedTheme currentLedTheme = {
+  20, 20, 30,  // 默认冷色
+  80,          // 默认最大亮度
+  3000         // 呼吸周期
+};
+
+unsigned long lastLedUpdateMs = 0;
+
+static constexpr unsigned long LED_UPDATE_INTERVAL_MS = 40;
+static constexpr uint8_t LED_COUNT = 12;
+
 
 /*
  * Face 构造参数顺序：
@@ -835,6 +862,143 @@ void webSocketEvent(
   }
 }
 
+
+LedTheme getLedTheme() {
+  FaceEffect effect = faceEffectState.get();
+
+  /*
+   * 自定义 face_effect 的优先级高于 expression。
+   */
+  switch (effect) {
+    case FaceEffect::HeartEyes:
+    case FaceEffect::KissFace:
+      return {255, 35, 130, 180, 2400};
+
+    case FaceEffect::SparkleEyes:
+    case FaceEffect::LaughFace:
+      return {255, 180, 20, 210, 1600};
+
+    case FaceEffect::DizzyEyes:
+    case FaceEffect::ConfusedFace:
+      return {100, 30, 255, 150, 2200};
+
+    case FaceEffect::TearEyes:
+      return {20, 100, 255, 130, 3500};
+
+    case FaceEffect::SurprisedFace:
+      return {255, 255, 255, 230, 1000};
+
+    case FaceEffect::PoutFace:
+      return {255, 80, 30, 150, 2600};
+
+    case FaceEffect::ShyFace:
+      return {255, 70, 140, 120, 3200};
+
+    case FaceEffect::SmugFace:
+      return {150, 40, 220, 160, 2200};
+
+    case FaceEffect::NervousFace:
+      return {255, 100, 20, 120, 1100};
+
+    case FaceEffect::RelievedFace:
+      return {30, 220, 100, 140, 3600};
+
+    case FaceEffect::DeterminedFace:
+      return {20, 210, 180, 180, 1800};
+
+    case FaceEffect::None:
+    default:
+      break;
+  }
+
+  /*
+   * 没有 face_effect 时，使用原生 expression 的主题。
+   */
+  switch (avatar.getExpression()) {
+    case Expression::Happy:
+      return {255, 180, 0, 170, 2200};
+
+    case Expression::Sad:
+      return {0, 80, 255, 120, 3800};
+
+    case Expression::Angry:
+      return {255, 0, 0, 190, 900};
+
+    case Expression::Doubt:
+      return {150, 40, 220, 130, 2400};
+
+    case Expression::Sleepy:
+      return {30, 20, 120, 80, 5000};
+
+    case Expression::Neutral:
+    default:
+      return {20, 30, 50, 90, 3200};
+  }
+}
+
+void updateLedBreath() {
+  const unsigned long now = millis();
+
+  if (now - lastLedUpdateMs < LED_UPDATE_INTERVAL_MS) {
+    return;
+  }
+
+  lastLedUpdateMs = now;
+
+  const LedTheme theme = getLedTheme();
+
+  /*
+   * 相位范围：0.0 ~ 1.0。
+   */
+  const float phase =
+      static_cast<float>(now % theme.periodMs) /
+      static_cast<float>(theme.periodMs);
+
+  /*
+   * wave 范围：0.0 ~ 1.0。
+   */
+  const float wave =
+      (sinf(phase * 6.2831853f) + 1.0f) * 0.5f;
+
+  /*
+   * 亮度范围：
+   *
+   * minBrightness：主题最大亮度的 15%
+   * maxBrightness：主题最大亮度的 100%
+   *
+   * brightnessScale 始终不超过 1.0，
+   * 避免 uint8_t 转换时发生溢出。
+   */
+  const float maxBrightness =
+      static_cast<float>(theme.maxBrightness) / 255.0f;
+
+  const float minBrightness = maxBrightness * 0.15f;
+
+  const float brightnessScale =
+      minBrightness +
+      (maxBrightness - minBrightness) * wave;
+
+  const uint8_t r =
+      static_cast<uint8_t>(theme.r * brightnessScale);
+
+  const uint8_t g =
+      static_cast<uint8_t>(theme.g * brightnessScale);
+
+  const uint8_t b =
+      static_cast<uint8_t>(theme.b * brightnessScale);
+
+  /*
+   * 第一版：12 颗 RGB 灯完全同步。
+   */
+  for (uint8_t i = 0; i < LED_COUNT; ++i) {
+    M5StackChan.setRgbColor(i, r, g, b);
+  }
+
+  M5StackChan.refreshRgb();
+}
+
+
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -848,6 +1012,13 @@ void setup() {
    * StackChan-BSP 负责设备、舵机供电和舵机总线初始化。
    */
   M5StackChan.begin();
+
+  /*
+ * 让首次 updateLedBreath() 不受 40ms 刷新间隔限制。
+ */
+lastLedUpdateMs = millis() - LED_UPDATE_INTERVAL_MS;
+updateLedBreath();
+
 
   /*
    * CoreS3 官方 SD 卡初始化。
@@ -1054,6 +1225,8 @@ void loop() {
   updateSpeechText();
   updateTouchInput();
   updateHeadTouchInput();
+
+  updateLedBreath();
 
   delay(10);
 }
