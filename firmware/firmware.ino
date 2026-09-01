@@ -58,6 +58,23 @@ unsigned long lastLedUpdateMs = 0;
 
 static constexpr unsigned long LED_UPDATE_INTERVAL_MS = 40;
 static constexpr uint8_t LED_COUNT = 12;
+/*
+ * 头顶触摸：柔和闪烁两次。
+ *
+ * 一个周期为“亮起 + 回落”，共两个周期。
+ */
+bool headTouchLightActive = false;
+unsigned long headTouchLightStartedMs = 0;
+
+static constexpr unsigned long HEAD_TOUCH_LIGHT_CYCLE_MS = 600;
+static constexpr uint8_t HEAD_TOUCH_LIGHT_FLASH_COUNT = 2;
+
+/*
+ * 屏幕文字存在时，视为角色正在说话。
+ */
+static constexpr float SPEAKING_LIGHT_BOOST = 1.22f;
+
+
 
 
 /*
@@ -674,16 +691,22 @@ void updateHeadTouchInput() {
     return;
   }
 
-  lastHeadTouchEventMs = now;
+lastHeadTouchEventMs = now;
 
-  Serial.printf(
-    "[HEAD] Raw touch detected: front=%u, middle=%u, back=%u\n",
-    static_cast<unsigned>(intensities[0]),
-    static_cast<unsigned>(intensities[1]),
-    static_cast<unsigned>(intensities[2])
-  );
+Serial.printf(
+  "[HEAD] Raw touch detected: front=%u, middle=%u, back=%u\n",
+  static_cast<unsigned>(intensities[0]),
+  static_cast<unsigned>(intensities[1]),
+  static_cast<unsigned>(intensities[2])
+);
 
-  sendHeadTouchEvent();
+/*
+ * 仅在有效的“未触摸 -> 触摸”边缘事件触发，
+ * 不会在持续触摸期间反复重启闪烁。
+ */
+startHeadTouchLightEffect();
+
+sendHeadTouchEvent();
 }
 
 /*
@@ -948,53 +971,109 @@ void updateLedBreath() {
   const LedTheme theme = getLedTheme();
 
   /*
-   * 相位范围：0.0 ~ 1.0。
+   * wave 的范围是 0.0 ~ 1.0。
    */
   const float phase =
       static_cast<float>(now % theme.periodMs) /
       static_cast<float>(theme.periodMs);
 
-  /*
-   * wave 范围：0.0 ~ 1.0。
-   */
   const float wave =
       (sinf(phase * 6.2831853f) + 1.0f) * 0.5f;
 
   /*
-   * 亮度范围：
+   * 基础亮度范围：
    *
-   * minBrightness：主题最大亮度的 15%
-   * maxBrightness：主题最大亮度的 100%
+   * - 最低：该主题最大亮度的 15%
+   * - 最高：该主题最大亮度的 100%
    *
-   * brightnessScale 始终不超过 1.0，
-   * 避免 uint8_t 转换时发生溢出。
+   * 以 theme.maxBrightness / 255.0f 为上限，
+   * 避免计算值超过 1.0 而造成 uint8_t 溢出。
    */
   const float maxBrightness =
       static_cast<float>(theme.maxBrightness) / 255.0f;
 
   const float minBrightness = maxBrightness * 0.15f;
 
-  const float brightnessScale =
+  float brightness =
       minBrightness +
       (maxBrightness - minBrightness) * wave;
 
-  const uint8_t r =
-      static_cast<uint8_t>(theme.r * brightnessScale);
-
-  const uint8_t g =
-      static_cast<uint8_t>(theme.g * brightnessScale);
-
-  const uint8_t b =
-      static_cast<uint8_t>(theme.b * brightnessScale);
+  /*
+   * 屏幕有文字时，同色系亮度增强。
+   *
+   * 若文字被 updateSpeechText() 清除，activeSpeechText 会成为空字符串，
+   * 本轮即可自然恢复为普通呼吸灯。
+   */
+  if (activeSpeechText.length() > 0) {
+    brightness *= SPEAKING_LIGHT_BOOST;
+  }
 
   /*
-   * 第一版：12 颗 RGB 灯完全同步。
+   * 摸头临时灯效具有最高优先级。
+   *
+   * 两次同主题色的柔和闪烁：
+   * 亮起 -> 回落 -> 再亮起 -> 再回落。
    */
+  if (headTouchLightActive) {
+    const unsigned long totalDuration =
+        HEAD_TOUCH_LIGHT_CYCLE_MS * HEAD_TOUCH_LIGHT_FLASH_COUNT;
+
+    const unsigned long elapsed =
+        now - headTouchLightStartedMs;
+
+    if (elapsed >= totalDuration) {
+      headTouchLightActive = false;
+
+      Serial.println("[LED] Head-touch soft flash finished");
+    } else {
+      const unsigned long cycleElapsed =
+          elapsed % HEAD_TOUCH_LIGHT_CYCLE_MS;
+
+      const float cyclePhase =
+          static_cast<float>(cycleElapsed) /
+          static_cast<float>(HEAD_TOUCH_LIGHT_CYCLE_MS);
+
+      /*
+       * sin(0 -> PI) 的范围为 0 -> 1 -> 0。
+       */
+      const float flashWave =
+          sinf(cyclePhase * 3.14159265f);
+
+      brightness =
+          maxBrightness * (0.35f + flashWave * 0.65f);
+    }
+  }
+
+  /*
+   * 防止文字增强后超过 RGB 可用范围。
+   */
+  if (brightness > 1.0f) {
+    brightness = 1.0f;
+  }
+
+  const uint8_t r =
+      static_cast<uint8_t>(theme.r * brightness);
+
+  const uint8_t g =
+      static_cast<uint8_t>(theme.g * brightness);
+
+  const uint8_t b =
+      static_cast<uint8_t>(theme.b * brightness);
+
   for (uint8_t i = 0; i < LED_COUNT; ++i) {
     M5StackChan.setRgbColor(i, r, g, b);
   }
 
   M5StackChan.refreshRgb();
+}
+
+
+
+void startHeadTouchLightEffect() {
+  headTouchLightActive = true;
+  headTouchLightStartedMs = millis();
+
+  Serial.println("[LED] Head-touch soft flash started");
 }
 
 
