@@ -337,3 +337,177 @@ void CustomEye::drawTearEyes(M5Canvas *canvas,
       primaryColor
   );
 }
+void CustomEye::drawSurprisedFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 6.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 4.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio()
+              : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  uint16_t backgroundColor =
+      ctx->getColorDepth() == 1
+          ? 0
+          : ctx->getColorPalette()->get(COLOR_BACKGROUND);
+
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 15, y - 2, 30, 4, primaryColor);
+    return;
+  }
+
+  int radius = static_cast<int>(16.0f * openRatio);
+  if (radius < 5) {
+    radius = 5;
+  }
+
+  // 大圆眼。
+  canvas->fillCircle(x, y, radius, primaryColor);
+
+  // 左上背景色圆形高光。
+  canvas->fillCircle(
+      x - radius / 3,
+      y - radius / 3,
+      radius / 4,
+      backgroundColor);
+}
+
+void CustomEye::drawPoutFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  /*
+   * pout_face 的重点是 CustomMouth 的嘟嘴。
+   * 眼睛保持库原生逻辑，因此仍支持六种基础 Expression。
+   */
+  normalEye_.draw(canvas, rect, ctx);
+}
+
+void CustomEye::drawShyFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 4.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 3.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio()
+              : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 11, y - 2, 22, 4, primaryColor);
+    return;
+  }
+
+  int radius = static_cast<int>(5.0f * openRatio);
+  if (radius < 2) {
+    radius = 2;
+  }
+
+  // 比原生眼小的圆点眼。
+  canvas->fillCircle(x, y, radius, primaryColor);
+}
+
+void CustomEye::drawSmugFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 6.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 4.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio()
+              : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  /*
+   * 左眼睁开、右眼半眯。
+   *
+   * Face 的顺序和库中 Eye 的约定：
+   * isLeft_ == true  是左眼；
+   * isLeft_ == false 是右眼。
+   */
+  if (isLeft_) {
+    if (openRatio <= 0.10f) {
+      canvas->fillRect(x - 14, y - 2, 28, 4, primaryColor);
+      return;
+    }
+
+    canvas->fillCircle(x, y, 12, primaryColor);
+  } else {
+    // 右侧眯眼的位置略低，形成得意感。
+    canvas->fillRect(x - 14, y + 3, 28, 4, primaryColor);
+  }
+}
+
+void CustomEye::drawConfusedFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 5.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 3.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio()
+              : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 13, y - 2, 26, 4, primaryColor);
+    return;
+  }
+
+  // 左大右小，形成明显的困惑感。
+  int radius = isLeft_ ? 14 : 8;
+  radius = static_cast<int>(radius * openRatio);
+
+  if (radius < 3) {
+    radius = 3;
+  }
+
+  canvas->fillCircle(x, y, radius, primaryColor);
+}
