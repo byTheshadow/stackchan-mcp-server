@@ -15,36 +15,53 @@
 #include <SPI.h>
 #include <SD.h>
 
-#include "HeartEye.h"
+#include "CustomEye.h"
 
 using namespace m5avatar;
 
 /*
- * Face 构造参数顺序：
- * mouth, right eye, left eye, right eyebrow, left eyebrow
+ * 自定义眼睛效果状态。
  *
- * Avatar → Face → 各 Drawable 的释放由库析构链负责；
- * 因此此处 new 的对象不要在其他地方手动 delete。
+ * FaceEffect::None:
+ *   使用 m5stack-avatar 原生 Eye。
+ *
+ * FaceEffect::HeartEyes:
+ *   使用自定义爱心眼。
+ */
+FaceEffectState faceEffectState;
+
+/*
+ * Face 构造参数顺序：
+ *
+ * mouth,
+ * right eye,
+ * left eye,
+ * right eyebrow,
+ * left eyebrow
+ *
+ * Avatar 会负责释放 Face；
+ * Face 会负责释放其中的各个 Drawable。
  */
 Avatar avatar(
-    new Face(
-        new Mouth(50, 90, 4, 60),
-        new HeartEye(false),          // 右眼
-        new HeartEye(true),           // 左眼
-        new Eyeblow(32, 0, false),    // 右眉
-        new Eyeblow(32, 0, true)));   // 左眉
+  new Face(
+    new Mouth(50, 90, 4, 60),
+    new CustomEye(false, &faceEffectState),  // 右眼
+    new CustomEye(true, &faceEffectState),   // 左眼
+    new Eyeblow(32, 0, false),               // 右眉
+    new Eyeblow(32, 0, true)                 // 左眉
+  )
+);
 
 WebSocketsClient webSocket;
 Preferences prefs;
 
 char ws_host[128] = "";
+
 const uint16_t ws_port = 443;
 const char* ws_path = "/";
+
 /*
  * M5Stack CoreS3 官方 microSD SPI 引脚定义。
- *
- * 来源：CoreS3 官方 SD 卡示例。
- * 不使用未经验证的其他 GPIO。
  */
 static constexpr int SD_SPI_CS_PIN = 4;
 static constexpr int SD_SPI_SCK_PIN = 36;
@@ -55,13 +72,11 @@ bool sdCardReady = false;
 
 /*
  * WAV 流式读取缓冲。
- * 采用 M5Unified 官方 Speaker_SD_wav_file 示例的播放方法：
- * SD 文件 → 分块读取 → M5.Speaker.playRaw(...)
  */
 static constexpr size_t WAV_BUFFER_COUNT = 3;
 static constexpr size_t WAV_BUFFER_SIZE = 1024;
-uint8_t wavData[WAV_BUFFER_COUNT][WAV_BUFFER_SIZE];
 
+uint8_t wavData[WAV_BUFFER_COUNT][WAV_BUFFER_SIZE];
 
 enum GestureKind {
   GESTURE_NONE = 0,
@@ -74,9 +89,6 @@ unsigned long nextGestureStepMs = 0;
 
 /*
  * 屏幕文字状态。
- *
- * Avatar 启动后，必须通过 avatar.setSpeechText() 显示文字；
- * 不要直接操作 M5.Display，否则可能与 Avatar 显示任务冲突。
  */
 String activeSpeechText = "";
 bool speechClearScheduled = false;
@@ -87,17 +99,13 @@ const unsigned long MIN_DISPLAY_DURATION_MS = 1000;
 const unsigned long MAX_DISPLAY_DURATION_MS = 10000;
 
 /*
- * 触摸事件防抖。
- *
- * 同一次触摸按下只上报一次；
- * 两次有效触摸事件至少间隔 700ms。
+ * 屏幕触摸防抖。
  */
 const unsigned long TOUCH_EVENT_DEBOUNCE_MS = 700;
 unsigned long lastTouchEventMs = 0;
 
 /*
- * StackChan 头顶电容触摸的独立防抖。
- * 不与屏幕触摸共用计时，避免摸头后立刻摸屏幕被错误忽略。
+ * 头顶触摸防抖。
  */
 const unsigned long HEAD_TOUCH_DEBOUNCE_MS = 700;
 unsigned long lastHeadTouchEventMs = 0;
@@ -123,13 +131,10 @@ struct __attribute__((packed)) WavSubChunk {
 /*
  * 从 SD 卡读取并播放 PCM WAV。
  *
- * 第一版只接受官方示例所支持的：
- * - PCM（audioFormat = 1）
- * - 8-bit 或 16-bit
- * - 单声道或立体声
- *
- * 本函数从现有 WebSocket 指令中调用。
- * 文件很短，因此按官方分块播放方案处理。
+ * 支持：
+ * - PCM；
+ * - 8-bit 或 16-bit；
+ * - 单声道或立体声。
  */
 bool playSdWav(const char* filename) {
   if (!sdCardReady) {
@@ -154,10 +159,12 @@ bool playSdWav(const char* filename) {
 
   WavHeader header = {};
 
-  if (file.read(
-        reinterpret_cast<uint8_t*>(&header),
-        sizeof(WavHeader)
-      ) != sizeof(WavHeader)) {
+  if (
+    file.read(
+      reinterpret_cast<uint8_t*>(&header),
+      sizeof(WavHeader)
+    ) != sizeof(WavHeader)
+  ) {
     Serial.printf("[AUDIO] WAV header read failed: %s\n", filename);
     file.close();
     return false;
@@ -191,7 +198,6 @@ bool playSdWav(const char* filename) {
 
   /*
    * 跳过 fmt chunk 其余内容，并查找 data chunk。
-   * 这样可兼容 fmt 后包含额外 chunk 的普通 PCM WAV。
    */
   const uint32_t afterFmtOffset =
     offsetof(WavHeader, audioFormat) + header.fmtChunkSize;
@@ -217,9 +223,7 @@ bool playSdWav(const char* filename) {
       break;
     }
 
-    if (!file.seek(
-          file.position() + subChunk.chunkSize
-        )) {
+    if (!file.seek(file.position() + subChunk.chunkSize)) {
       break;
     }
   }
@@ -232,6 +236,7 @@ bool playSdWav(const char* filename) {
 
   uint32_t remaining = subChunk.chunkSize;
   size_t bufferIndex = 0;
+
   const bool stereo = header.channels > 1;
   const bool is16Bit = header.bitsPerSample == 16;
 
@@ -309,11 +314,15 @@ void playSoundByName(const char* sound) {
   Serial.printf("[AUDIO] Unknown sound ignored: %s\n", sound);
 }
 
-
-
-void showBootMessage(const char* line1, const char* line2 = nullptr) {
-  // 只能在 avatar.init() 之前调用。
+void showBootMessage(
+  const char* line1,
+  const char* line2 = nullptr
+) {
+  /*
+   * 只能在 avatar.init() 之前调用。
+   */
   M5.Display.clear(TFT_BLACK);
+
   M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
   M5.Display.setTextSize(2);
   M5.Display.setCursor(8, 35);
@@ -347,6 +356,30 @@ void setExpressionByName(const char* expr) {
   }
 }
 
+void setFaceEffectByName(const char* effect) {
+  if (effect == nullptr) {
+    return;
+  }
+
+  if (strcmp(effect, "heart_eyes") == 0) {
+    faceEffectState.set(FaceEffect::HeartEyes);
+    Serial.println("[FACE] Effect: heart_eyes");
+  } else if (strcmp(effect, "none") == 0) {
+    faceEffectState.set(FaceEffect::None);
+    Serial.println("[FACE] Effect: none");
+  } else {
+    /*
+     * 未知效果安全回退到原生眼睛。
+     */
+    faceEffectState.set(FaceEffect::None);
+
+    Serial.printf(
+      "[FACE] Unknown effect '%s', fallback to none\n",
+      effect
+    );
+  }
+}
+
 unsigned long clampDisplayDuration(unsigned long durationMs) {
   if (durationMs < MIN_DISPLAY_DURATION_MS) {
     return MIN_DISPLAY_DURATION_MS;
@@ -371,11 +404,12 @@ void setSpeechTextForDuration(
   avatar.setSpeechText(activeSpeechText.c_str());
 
   /*
-   * 空文字表示立即清除，并取消旧的自动清除计时。
+   * 空文字立即清除，并取消旧的自动清除计时。
    */
   if (activeSpeechText.length() == 0) {
     speechClearScheduled = false;
     speechClearAtMs = 0;
+
     Serial.println("[DISPLAY] Speech text cleared");
     return;
   }
@@ -399,7 +433,7 @@ void updateSpeechText() {
   const unsigned long now = millis();
 
   /*
-   * 使用有符号差值，能正确处理 millis() 溢出。
+   * 使用有符号差值，正确处理 millis() 溢出。
    */
   if (static_cast<long>(now - speechClearAtMs) < 0) {
     return;
@@ -445,19 +479,19 @@ void updateGesture() {
 
   switch (gestureStep) {
     case 0:
-      M5StackChan.Motion.moveY(300, 500);  // 已验证：30.0°
+      M5StackChan.Motion.moveY(300, 500);
       Serial.println("[GESTURE] Nod step 1: Y=30.0");
       nextGestureStepMs = now + 350;
       break;
 
     case 1:
-      M5StackChan.Motion.moveY(50, 600);   // 已验证：5.0°
+      M5StackChan.Motion.moveY(50, 600);
       Serial.println("[GESTURE] Nod step 2: Y=5.0");
       nextGestureStepMs = now + 350;
       break;
 
     case 2:
-      M5StackChan.Motion.moveY(300, 500);  // 已验证：30.0°
+      M5StackChan.Motion.moveY(300, 500);
       Serial.println("[GESTURE] Nod step 3: Y=30.0");
       nextGestureStepMs = now + 350;
       break;
@@ -477,20 +511,13 @@ void updateGesture() {
 }
 
 /*
- * 将触摸事件通过现有 WebSocket 上报至 Render。
- *
- * 格式：
- * {
- *   "type": "robot_event",
- *   "event": "touch_tap",
- *   "x": 160,
- *   "y": 120,
- *   "at_ms": 123456
- * }
+ * 将屏幕触摸事件通过 WebSocket 上报至 Render。
  */
 void sendTouchTapEvent(int32_t x, int32_t y) {
   if (!webSocket.isConnected()) {
-    Serial.println("[TOUCH] Tap detected, but WebSocket is disconnected");
+    Serial.println(
+      "[TOUCH] Tap detected, but WebSocket is disconnected"
+    );
     return;
   }
 
@@ -514,10 +541,11 @@ void sendTouchTapEvent(int32_t x, int32_t y) {
   );
 }
 
-
 void sendHeadTouchEvent() {
   if (!webSocket.isConnected()) {
-    Serial.println("[HEAD] Touch detected, but WebSocket is disconnected");
+    Serial.println(
+      "[HEAD] Touch detected, but WebSocket is disconnected"
+    );
     return;
   }
 
@@ -537,17 +565,12 @@ void sendHeadTouchEvent() {
 
 void updateHeadTouchInput() {
   /*
-   * 直接读取 StackChan 头顶三个原始电容感应区：
-   *
    * intensities[0] = Front
    * intensities[1] = Middle
    * intensities[2] = Back
-   *
-   * 每个值：
-   * 0 = 未触摸
-   * 1 ~ 3 = 感应到触摸，数值越大代表强度越高
    */
-  const auto& intensities = M5StackChan.TouchSensor.getIntensities();
+  const auto& intensities =
+    M5StackChan.TouchSensor.getIntensities();
 
   const bool isTouched =
     intensities[0] > 0 ||
@@ -555,8 +578,7 @@ void updateHeadTouchInput() {
     intensities[2] > 0;
 
   /*
-   * 仅在“从未触摸 → 触摸”的边缘上报一次。
-   * 手指持续放在头顶时不会重复发送。
+   * 仅在“未触摸 → 触摸”的边缘上报一次。
    */
   static bool wasTouched = false;
 
@@ -593,14 +615,11 @@ void updateHeadTouchInput() {
   sendHeadTouchEvent();
 }
 
-
-
 /*
  * 检查屏幕的新一次按下。
  *
- * M5StackChan.update() 已在 loop() 开头执行，
- * 所以此处只读取 M5Unified 已更新的触摸状态；
- * 不额外调用 M5.update()，避免重复更新输入状态。
+ * M5StackChan.update() 已经在 loop() 开头执行，
+ * 所以这里不再次调用 M5.update()。
  */
 void updateTouchInput() {
   auto touch = M5.Touch.getDetail();
@@ -630,10 +649,19 @@ void updateTouchInput() {
   sendTouchTapEvent(touch.x, touch.y);
 }
 
-void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+void webSocketEvent(
+  WStype_t type,
+  uint8_t* payload,
+  size_t length
+) {
   switch (type) {
     case WStype_CONNECTED:
       Serial.println("[WS] Connected to Render");
+
+      /*
+       * 连接成功时只设置基础表情。
+       * 当前 face_effect 状态不强制修改。
+       */
       avatar.setExpression(Expression::Happy);
       M5StackChan.Motion.goHome(500);
       break;
@@ -655,44 +683,65 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
       );
 
       DynamicJsonDocument doc(1024);
-      DeserializationError error = deserializeJson(doc, payload, length);
+      DeserializationError error =
+        deserializeJson(doc, payload, length);
 
       if (error) {
-        Serial.printf("[WS] JSON parse failed: %s\n", error.c_str());
+        Serial.printf(
+          "[WS] JSON parse failed: %s\n",
+          error.c_str()
+        );
         return;
       }
 
       const char* expression = doc["expression"];
-const char* motion = doc["motion"];
-const char* sound = doc["sound"];
-const char* action = doc["action"];
-
+      const char* faceEffect = doc["face_effect"];
+      const char* motion = doc["motion"];
+      const char* sound = doc["sound"];
+      const char* action = doc["action"];
 
       /*
        * 只有 Render 明确发送 text_to_display 时才更新文字，
        * 避免旧版 expression + motion 调用清除已有文字。
        */
-      JsonVariantConst textToDisplay = doc["text_to_display"];
+      JsonVariantConst textToDisplay =
+        doc["text_to_display"];
 
       if (
         !textToDisplay.isNull() &&
         textToDisplay.is<const char*>()
       ) {
-        const char* text = textToDisplay.as<const char*>();
+        const char* text =
+          textToDisplay.as<const char*>();
 
         unsigned long durationMs =
-          doc["display_duration_ms"] | DEFAULT_DISPLAY_DURATION_MS;
+          doc["display_duration_ms"] |
+          DEFAULT_DISPLAY_DURATION_MS;
 
         setSpeechTextForDuration(text, durationMs);
       }
 
       if (expression != nullptr) {
-        Serial.printf("[ACTION] Expression: %s\n", expression);
+        Serial.printf(
+          "[ACTION] Expression: %s\n",
+          expression
+        );
         setExpressionByName(expression);
       }
 
+      if (faceEffect != nullptr) {
+        Serial.printf(
+          "[ACTION] Face effect: %s\n",
+          faceEffect
+        );
+        setFaceEffectByName(faceEffect);
+      }
+
       if (motion != nullptr) {
-        Serial.printf("[ACTION] Motion: %s\n", motion);
+        Serial.printf(
+          "[ACTION] Motion: %s\n",
+          motion
+        );
 
         if (strcmp(motion, "nod") == 0) {
           startNod();
@@ -703,11 +752,18 @@ const char* action = doc["action"];
           Serial.println("[GESTURE] Home sent");
 
         } else if (strcmp(motion, "none") == 0) {
-          Serial.println("[GESTURE] No motion requested");
+          Serial.println(
+            "[GESTURE] No motion requested"
+          );
 
         } else if (strcmp(motion, "shake") == 0) {
-          // 暂不执行：尚未在实体设备验证安全范围。
-          Serial.println("[GESTURE] Shake ignored: not hardware-tested yet");
+          /*
+           * 暂不执行：尚未在实体设备验证安全范围。
+           */
+          Serial.println(
+            "[GESTURE] Shake ignored: "
+            "not hardware-tested yet"
+          );
         }
 
       } else if (
@@ -719,11 +775,13 @@ const char* action = doc["action"];
         Serial.println("[GESTURE] Home sent");
       }
 
-            if (sound != nullptr) {
-        Serial.printf("[ACTION] Sound: %s\n", sound);
+      if (sound != nullptr) {
+        Serial.printf(
+          "[ACTION] Sound: %s\n",
+          sound
+        );
         playSoundByName(sound);
       }
-
 
       break;
     }
@@ -742,13 +800,13 @@ void setup() {
     "=== StackChan WiFi + Render + Servo + Display + Touch firmware ==="
   );
 
-  // StackChan-BSP 负责设备、舵机供电和舵机总线的官方初始化。
+  /*
+   * StackChan-BSP 负责设备、舵机供电和舵机总线初始化。
+   */
   M5StackChan.begin();
 
-    /*
+  /*
    * CoreS3 官方 SD 卡初始化。
-   * Avatar 启动前仍允许显示启动信息，但不在此直接修改
-   * Avatar 已接管后的显示内容。
    */
   SPI.begin(
     SD_SPI_SCK_PIN,
@@ -757,19 +815,27 @@ void setup() {
     SD_SPI_CS_PIN
   );
 
-  sdCardReady = SD.begin(SD_SPI_CS_PIN, SPI, 25000000);
+  sdCardReady = SD.begin(
+    SD_SPI_CS_PIN,
+    SPI,
+    25000000
+  );
 
   if (sdCardReady) {
     Serial.println("[SD] Card mounted");
 
     Serial.printf(
       "[SD] /message.wav: %s\n",
-      SD.exists("/message.wav") ? "found" : "missing"
+      SD.exists("/message.wav")
+        ? "found"
+        : "missing"
     );
 
     Serial.printf(
       "[SD] /emotion.wav: %s\n",
-      SD.exists("/emotion.wav") ? "found" : "missing"
+      SD.exists("/emotion.wav")
+        ? "found"
+        : "missing"
     );
   } else {
     Serial.println("[SD] Card mount failed");
@@ -777,28 +843,40 @@ void setup() {
 
   /*
    * M5Unified 音量范围为 0 至 255。
-   * 首次从中等偏低音量 80 开始，避免突然过响。
    */
   M5.Speaker.setVolume(80);
-
 
   M5StackChan.Motion.setAutoAngleSyncEnabled(false);
   M5StackChan.Motion.setAutoTorqueReleaseEnabled(true);
   M5StackChan.Motion.goHome(500);
 
-  // Avatar 尚未启动，因此这个阶段可以安全直接操作 M5.Display。
-  showBootMessage("WiFi starting...", "Please wait");
+  /*
+   * Avatar 尚未启动，因此这里可以安全操作 M5.Display。
+   */
+  showBootMessage(
+    "WiFi starting...",
+    "Please wait"
+  );
 
   prefs.begin("stackchan", false);
 
-  String savedHost = prefs.getString("server_host", "");
-  savedHost.toCharArray(ws_host, sizeof(ws_host));
+  String savedHost =
+    prefs.getString("server_host", "");
 
-  Serial.printf("[CONFIG] Saved Render host: '%s'\n", ws_host);
+  savedHost.toCharArray(
+    ws_host,
+    sizeof(ws_host)
+  );
+
+  Serial.printf(
+    "[CONFIG] Saved Render host: '%s'\n",
+    ws_host
+  );
 
   WiFi.mode(WIFI_STA);
 
   WiFiManager wm;
+
   WiFiManagerParameter serverParameter(
     "server",
     "Render Server Host",
@@ -809,65 +887,101 @@ void setup() {
   wm.addParameter(&serverParameter);
   wm.setConnectTimeout(15);
 
-  Serial.println("[WIFI] Trying saved WiFi credentials...");
+  Serial.println(
+    "[WIFI] Trying saved WiFi credentials..."
+  );
 
   if (!wm.autoConnect("StackChan-Setup")) {
-    Serial.println("[WIFI] Could not join saved WiFi.");
-    Serial.println("[WIFI] Starting config portal: StackChan-Setup");
+    Serial.println(
+      "[WIFI] Could not join saved WiFi."
+    );
+
+    Serial.println(
+      "[WIFI] Starting config portal: "
+      "StackChan-Setup"
+    );
 
     showBootMessage(
       "WiFi setup",
-      "AP: StackChan-Setup\nOpen: 192.168.4.1"
+      "AP: StackChan-Setup\n"
+      "Open: 192.168.4.1"
     );
 
-    // 不设置门户超时：等待用户完成配网。
+    /*
+     * 不设置门户超时，等待用户完成配网。
+     */
     wm.startConfigPortal("StackChan-Setup");
   }
 
-  Serial.printf("[WIFI] Status: %d\n", WiFi.status());
-  Serial.printf("[WIFI] IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf(
+    "[WIFI] Status: %d\n",
+    WiFi.status()
+  );
 
-  const char* enteredHost = serverParameter.getValue();
+  Serial.printf(
+    "[WIFI] IP: %s\n",
+    WiFi.localIP().toString().c_str()
+  );
 
-  if (enteredHost != nullptr && strlen(enteredHost) > 0) {
-    strncpy(ws_host, enteredHost, sizeof(ws_host) - 1);
+  const char* enteredHost =
+    serverParameter.getValue();
+
+  if (
+    enteredHost != nullptr &&
+    strlen(enteredHost) > 0
+  ) {
+    strncpy(
+      ws_host,
+      enteredHost,
+      sizeof(ws_host) - 1
+    );
+
     ws_host[sizeof(ws_host) - 1] = '\0';
-    prefs.putString("server_host", ws_host);
+
+    prefs.putString(
+      "server_host",
+      ws_host
+    );
   }
 
-  Serial.printf("[CONFIG] Active Render host: '%s'\n", ws_host);
+  Serial.printf(
+    "[CONFIG] Active Render host: '%s'\n",
+    ws_host
+  );
 
   /*
-   * Wi‑Fi 配置完成后才启动 Avatar。
-   * 从这里开始，不能再直接操作 M5.Display。
+   * Wi-Fi 配置完成后启动 Avatar。
    */
   avatar.init();
 
-/*
- * 让 Avatar 的 Balloon（文字气泡）使用 M5GFX 内置中文点阵字体。
- *
- * m5stack-avatar 的 DrawContext.h 已明确标注：
- *   &fonts::efontCN_10
- *
- * 不直接调用 M5.Display.setFont()：
- * Avatar 已启动独立绘制任务，文字必须继续由 avatar.setSpeechText()
- * 和 Avatar 自己的气泡绘制流程处理。
- */
-avatar.setSpeechFont(&fonts::efontCN_10);
+  /*
+   * 让 Avatar 的 Balloon 使用 M5GFX 内置中文点阵字体。
+   */
+  avatar.setSpeechFont(&fonts::efontCN_10);
 
-avatar.setExpression(Expression::Neutral);
-avatar.setSpeechText("");
-
+  /*
+   * 默认状态：
+   * - 原生 neutral 表情；
+   * - 原生眼睛；
+   * - 无文字。
+   */
+  faceEffectState.set(FaceEffect::None);
+  avatar.setExpression(Expression::Neutral);
+  avatar.setSpeechText("");
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WIFI] Not connected; WebSocket will not start");
+    Serial.println(
+      "[WIFI] Not connected; WebSocket will not start"
+    );
     return;
   }
 
   if (strlen(ws_host) == 0) {
     Serial.println("[WS] Render host is empty.");
+
     Serial.println(
-      "[WS] Open StackChan-Setup and fill Render Server Host."
+      "[WS] Open StackChan-Setup and fill "
+      "Render Server Host."
     );
     return;
   }
@@ -881,16 +995,21 @@ avatar.setSpeechText("");
 
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(5000);
-  webSocket.beginSSL(ws_host, ws_port, ws_path);
+  webSocket.beginSSL(
+    ws_host,
+    ws_port,
+    ws_path
+  );
 }
 
 void loop() {
   M5StackChan.update();
   webSocket.loop();
+
   updateGesture();
   updateSpeechText();
   updateTouchInput();
-    updateHeadTouchInput();
+  updateHeadTouchInput();
 
   delay(10);
 }
