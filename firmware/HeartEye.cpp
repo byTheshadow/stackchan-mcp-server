@@ -22,7 +22,8 @@ void HeartEye::draw(M5Canvas *canvas,
   uint16_t primaryColor =
       ctx->getColorDepth() == 1
           ? 1
-          : ctx->getColorPalette()->get(m5avatar::COLOR_PRIMARY);
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
 
   // 眨眼：爱心缩成短横线。
   if (openRatio <= 0.10f) {
