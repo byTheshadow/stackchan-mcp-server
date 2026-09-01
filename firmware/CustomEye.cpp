@@ -71,6 +71,27 @@ void CustomEye::draw(M5Canvas *canvas,
       drawConfusedFace(canvas, rect, ctx);
       return;
 
+          case FaceEffect::LaughFace:
+      drawLaughFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::KissFace:
+      drawKissFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::NervousFace:
+      drawNervousFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::RelievedFace:
+      drawRelievedFace(canvas, rect, ctx);
+      return;
+
+    case FaceEffect::DeterminedFace:
+      drawDeterminedFace(canvas, rect, ctx);
+      return;
+
+
     case FaceEffect::None:
     default:
       normalEye_.draw(canvas, rect, ctx);
@@ -510,4 +531,126 @@ void CustomEye::drawConfusedFace(
   }
 
   canvas->fillCircle(x, y, radius, primaryColor);
+}
+void CustomEye::drawLaughFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int x = rect.getCenterX();
+  int y = rect.getCenterY();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  // 弯月形闭合笑眼。
+  canvas->drawLine(x - 13, y + 2, x - 7, y + 7, primaryColor);
+  canvas->drawLine(x - 7, y + 7, x, y + 9, primaryColor);
+  canvas->drawLine(x, y + 9, x + 7, y + 7, primaryColor);
+  canvas->drawLine(x + 7, y + 7, x + 13, y + 2, primaryColor);
+}
+
+void CustomEye::drawKissFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  // 亲吻效果只修改嘴巴，眼睛保留原生实现。
+  normalEye_.draw(canvas, rect, ctx);
+}
+
+void CustomEye::drawNervousFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 5.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 3.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio()
+              : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 12, y - 2, 24, 4, primaryColor);
+    return;
+  }
+
+  int radius = static_cast<int>(5.0f * openRatio);
+  if (radius < 2) {
+    radius = 2;
+  }
+
+  canvas->fillCircle(x, y, radius, primaryColor);
+}
+
+void CustomEye::drawRelievedFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int x = rect.getCenterX();
+  int y = rect.getCenterY();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  // 相较 laugh_face 更平缓的放松闭眼。
+  canvas->drawLine(x - 12, y + 3, x - 6, y + 7, primaryColor);
+  canvas->drawLine(x - 6, y + 7, x, y + 8, primaryColor);
+  canvas->drawLine(x, y + 8, x + 6, y + 7, primaryColor);
+  canvas->drawLine(x + 6, y + 7, x + 12, y + 3, primaryColor);
+}
+
+void CustomEye::drawDeterminedFace(
+    M5Canvas *canvas,
+    m5avatar::BoundingRect rect,
+    m5avatar::DrawContext *ctx) {
+  int centerX = rect.getCenterX();
+  int centerY = rect.getCenterY();
+
+  m5avatar::Gaze gaze =
+      isLeft_ ? ctx->getLeftGaze() : ctx->getRightGaze();
+
+  int x = centerX + static_cast<int>(gaze.getHorizontal() * 5.0f);
+  int y = centerY + static_cast<int>(gaze.getVertical() * 3.0f);
+
+  float openRatio =
+      isLeft_ ? ctx->getLeftEyeOpenRatio()
+              : ctx->getRightEyeOpenRatio();
+
+  uint16_t primaryColor =
+      ctx->getColorDepth() == 1
+          ? 1
+          : ctx->getColorPalette()->get(COLOR_PRIMARY);
+
+  if (openRatio <= 0.10f) {
+    canvas->fillRect(x - 13, y - 2, 26, 4, primaryColor);
+    return;
+  }
+
+  constexpr int kWidth = 26;
+
+  int height = static_cast<int>(5.0f * openRatio);
+  if (height < 2) {
+    height = 2;
+  }
+
+  canvas->fillEllipse(
+      x,
+      y,
+      kWidth / 2,
+      height / 2,
+      primaryColor);
 }

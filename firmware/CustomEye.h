@@ -10,19 +10,24 @@
 enum class FaceEffect : uint8_t {
   None = 0,
 
-  // 已验证的眼睛效果
   HeartEyes,
   SparkleEyes,
   DizzyEyes,
   TearEyes,
 
-  // 新增完整脸部效果
   SurprisedFace,
   PoutFace,
   ShyFace,
   SmugFace,
-  ConfusedFace
+  ConfusedFace,
+
+  LaughFace,
+  KissFace,
+  NervousFace,
+  RelievedFace,
+  DeterminedFace
 };
+
 
 /*
  * 两只眼睛、嘴巴和眉毛共用的 face_effect 状态。
@@ -96,6 +101,27 @@ class CustomEye final : public m5avatar::Drawable {
   void drawConfusedFace(M5Canvas *canvas,
                         m5avatar::BoundingRect rect,
                         m5avatar::DrawContext *ctx);
+
+ void drawLaughFace(M5Canvas *canvas,
+                   m5avatar::BoundingRect rect,
+                   m5avatar::DrawContext *ctx);
+
+void drawKissFace(M5Canvas *canvas,
+                  m5avatar::BoundingRect rect,
+                  m5avatar::DrawContext *ctx);
+
+void drawNervousFace(M5Canvas *canvas,
+                     m5avatar::BoundingRect rect,
+                     m5avatar::DrawContext *ctx);
+
+void drawRelievedFace(M5Canvas *canvas,
+                      m5avatar::BoundingRect rect,
+                      m5avatar::DrawContext *ctx);
+
+void drawDeterminedFace(M5Canvas *canvas,
+                        m5avatar::BoundingRect rect,
+                        m5avatar::DrawContext *ctx);
+
 
   bool isLeft_;
   FaceEffectState *effectState_;

@@ -37,6 +37,26 @@ class CustomMouth final : public m5avatar::Drawable {
                          m5avatar::BoundingRect rect,
                          m5avatar::DrawContext *ctx);
 
+  void drawLaughMouth(M5Canvas *canvas,
+                      m5avatar::BoundingRect rect,
+                      m5avatar::DrawContext *ctx);
+
+  void drawKissMouth(M5Canvas *canvas,
+                     m5avatar::BoundingRect rect,
+                     m5avatar::DrawContext *ctx);
+
+  void drawNervousMouth(M5Canvas *canvas,
+                        m5avatar::BoundingRect rect,
+                        m5avatar::DrawContext *ctx);
+
+  void drawRelievedMouth(M5Canvas *canvas,
+                         m5avatar::BoundingRect rect,
+                         m5avatar::DrawContext *ctx);
+
+  void drawDeterminedMouth(M5Canvas *canvas,
+                           m5avatar::BoundingRect rect,
+                           m5avatar::DrawContext *ctx);
+
   FaceEffectState *effectState_;
   m5avatar::Mouth normalMouth_;
 };

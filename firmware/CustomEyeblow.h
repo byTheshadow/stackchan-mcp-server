@@ -17,6 +17,14 @@ class CustomEyeblow final : public m5avatar::Drawable {
             m5avatar::DrawContext *ctx) override;
 
  private:
+  void drawNervousEyeblow(M5Canvas *canvas,
+                          m5avatar::BoundingRect rect,
+                          m5avatar::DrawContext *ctx);
+
+  void drawDeterminedEyeblow(M5Canvas *canvas,
+                             m5avatar::BoundingRect rect,
+                             m5avatar::DrawContext *ctx);
+
   bool isLeft_;
   FaceEffectState *effectState_;
   m5avatar::Eyeblow normalEyeblow_;

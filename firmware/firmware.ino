@@ -378,7 +378,8 @@ void setFaceEffectByName(const char* effect) {
 
   } else if (strcmp(effect, "tear_eyes") == 0) {
     faceEffectState.set(FaceEffect::TearEyes);
-      } else if (strcmp(effect, "surprised_face") == 0) {
+
+  } else if (strcmp(effect, "surprised_face") == 0) {
     faceEffectState.set(FaceEffect::SurprisedFace);
 
   } else if (strcmp(effect, "pout_face") == 0) {
@@ -393,6 +394,20 @@ void setFaceEffectByName(const char* effect) {
   } else if (strcmp(effect, "confused_face") == 0) {
     faceEffectState.set(FaceEffect::ConfusedFace);
 
+  } else if (strcmp(effect, "laugh_face") == 0) {
+    faceEffectState.set(FaceEffect::LaughFace);
+
+  } else if (strcmp(effect, "kiss_face") == 0) {
+    faceEffectState.set(FaceEffect::KissFace);
+
+  } else if (strcmp(effect, "nervous_face") == 0) {
+    faceEffectState.set(FaceEffect::NervousFace);
+
+  } else if (strcmp(effect, "relieved_face") == 0) {
+    faceEffectState.set(FaceEffect::RelievedFace);
+
+  } else if (strcmp(effect, "determined_face") == 0) {
+    faceEffectState.set(FaceEffect::DeterminedFace);
 
   } else {
     faceEffectState.set(FaceEffect::None);
@@ -406,6 +421,7 @@ void setFaceEffectByName(const char* effect) {
 
   Serial.printf("[FACE] Effect: %s\n", effect);
 }
+
 
 
 unsigned long clampDisplayDuration(unsigned long durationMs) {

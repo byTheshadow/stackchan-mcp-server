@@ -238,28 +238,29 @@ const controlRobotTool = {
           '实体身体的基础图形表情。happy=开心、友好、感谢；sad=难过、遗憾、安慰；angry=不满、认真或强调；doubt=疑惑、思考、不确定；sleepy=困倦、晚安或休息；neutral=平静、默认状态。只能使用提供的枚举值。'
       },
 
-      face_effect: {
-        type: 'string',
-        enum: [
-  'none',
-  'heart_eyes',
-  'sparkle_eyes',
-  'dizzy_eyes',
-  'tear_eyes',
-  'surprised_face',
-  'pout_face',
-  'shy_face',
-  'smug_face',
-  'confused_face'
-],
-
-
-      
+     face_effect: {
+  type: 'string',
+  enum: [
+    'none',
+    'heart_eyes',
+    'sparkle_eyes',
+    'dizzy_eyes',
+    'tear_eyes',
+    'surprised_face',
+    'pout_face',
+    'shy_face',
+    'smug_face',
+    'confused_face',
+    'laugh_face',
+    'kiss_face',
+    'nervous_face',
+    'relieved_face',
+    'determined_face'
+  ],
   description:
-  '可选的自定义脸部效果。none 使用原生眼睛、嘴巴和眉毛；heart_eyes 为爱心眼；sparkle_eyes 为闪光眼；dizzy_eyes 为眩晕眼；tear_eyes 为泪眼；surprised_face 为惊讶大圆眼和 O 嘴；pout_face 为嘟嘴；shy_face 为害羞小眼、微笑嘴和腮红；smug_face 为得意歪嘴和挑眉；confused_face 为一大一小的困惑眼和挑眉。通常使用 none，只有语境明显需要时才使用自定义效果。'
+    '可选的自定义脸部效果。none 使用原生眼睛、嘴巴和眉毛；heart_eyes 为爱心眼；sparkle_eyes 为闪光眼；dizzy_eyes 为眩晕眼；tear_eyes 为泪眼；surprised_face 为惊讶大圆眼和 O 嘴；pout_face 为嘟嘴；shy_face 为害羞小眼、微笑嘴和腮红；smug_face 为得意歪嘴和挑眉；confused_face 为一大一小的困惑眼和挑眉；laugh_face 为弯月笑眼和张嘴大笑；kiss_face 为原生眼与圆形嘟嘴；nervous_face 为小圆眼、波浪嘴与高低眉；relieved_face 为放松闭眼和宽笑嘴；determined_face 为压缩眼、压低眉和坚定平嘴。通常使用 none，只有语境明显需要时才使用自定义效果。'
+},
 
-
-      },
 
       motion: {
         type: 'string',
@@ -371,7 +372,12 @@ const allowedFaceEffects = [
   'pout_face',
   'shy_face',
   'smug_face',
-  'confused_face'
+  'confused_face',
+  'laugh_face',
+  'kiss_face',
+  'nervous_face',
+  'relieved_face',
+  'determined_face'
 ];
 
 
