@@ -2,7 +2,8 @@
 #include <M5Unified.h>
 #include <M5StackChan.h>
 #include <math.h>
-
+#include <stddef.h>
+#include <string.h>
 
 #include <Avatar.h>
 #include <Eyeblow.h>
@@ -21,21 +22,17 @@
 #include "CustomMouth.h"
 #include "CustomEyeblow.h"
 
-
 using namespace m5avatar;
 
+
 /*
- * 自定义眼睛效果状态。
- *
- * FaceEffect::None:
- *   使用 m5stack-avatar 原生 Eye。
- *
- * FaceEffect::HeartEyes:
- *   使用自定义爱心眼。
+ * 自定义脸部效果状态。
  */
 FaceEffectState faceEffectState;
+
+
 /*
- * RGB 灯光控制。
+ * RGB 灯光主题。
  *
  * 0~5  ：左侧 6 颗灯
  * 6~11 ：右侧 6 颗灯
@@ -49,19 +46,21 @@ struct LedTheme {
 };
 
 LedTheme currentLedTheme = {
-  20, 20, 30,  // 默认冷色
-  80,          // 默认最大亮度
-  3000         // 呼吸周期
+  20,
+  20,
+  30,
+  80,
+  3000
 };
 
 unsigned long lastLedUpdateMs = 0;
 
 static constexpr unsigned long LED_UPDATE_INTERVAL_MS = 40;
 static constexpr uint8_t LED_COUNT = 12;
+
+
 /*
- * 头顶触摸：柔和闪烁两次。
- *
- * 一个周期为“亮起 + 回落”，共两个周期。
+ * 头顶触摸灯效。
  */
 bool headTouchLightActive = false;
 unsigned long headTouchLightStartedMs = 0;
@@ -69,15 +68,16 @@ unsigned long headTouchLightStartedMs = 0;
 static constexpr unsigned long HEAD_TOUCH_LIGHT_CYCLE_MS = 600;
 static constexpr uint8_t HEAD_TOUCH_LIGHT_FLASH_COUNT = 2;
 
+
 /*
- * 屏幕文字存在时，视为角色正在说话。
+ * 屏幕存在文字时，视为正在说话。
  */
 static constexpr float SPEAKING_LIGHT_BOOST = 1.22f;
 
 
-
-
 /*
+ * Avatar。
+ *
  * Face 构造参数顺序：
  *
  * mouth,
@@ -85,21 +85,21 @@ static constexpr float SPEAKING_LIGHT_BOOST = 1.22f;
  * left eye,
  * right eyebrow,
  * left eyebrow
- *
- * Avatar 会负责释放 Face；
- * Face 会负责释放其中的各个 Drawable。
  */
 Avatar avatar(
   new Face(
-  new CustomMouth(&faceEffectState),
-new CustomEye(false, &faceEffectState),  // 右眼
-new CustomEye(true, &faceEffectState),   // 左眼
-new CustomEyeblow(false, &faceEffectState), // 右眉
-new CustomEyeblow(true, &faceEffectState)   // 左眉
-
+    new CustomMouth(&faceEffectState),
+    new CustomEye(false, &faceEffectState),
+    new CustomEye(true, &faceEffectState),
+    new CustomEyeblow(false, &faceEffectState),
+    new CustomEyeblow(true, &faceEffectState)
   )
 );
 
+
+/*
+ * WebSocket 与配置。
+ */
 WebSocketsClient webSocket;
 Preferences prefs;
 
@@ -108,8 +108,9 @@ char ws_host[128] = "";
 const uint16_t ws_port = 443;
 const char* ws_path = "/";
 
+
 /*
- * M5Stack CoreS3 官方 microSD SPI 引脚定义。
+ * CoreS3 microSD SPI 引脚。
  */
 static constexpr int SD_SPI_CS_PIN = 4;
 static constexpr int SD_SPI_SCK_PIN = 36;
@@ -117,6 +118,7 @@ static constexpr int SD_SPI_MISO_PIN = 35;
 static constexpr int SD_SPI_MOSI_PIN = 37;
 
 bool sdCardReady = false;
+
 
 /*
  * WAV 流式读取缓冲。
@@ -126,14 +128,24 @@ static constexpr size_t WAV_BUFFER_SIZE = 1024;
 
 uint8_t wavData[WAV_BUFFER_COUNT][WAV_BUFFER_SIZE];
 
+
+/*
+ * 舵机动作类型。
+ */
 enum GestureKind {
   GESTURE_NONE = 0,
-  GESTURE_NOD
+  GESTURE_NOD,
+  GESTURE_SHAKE_HEAD,
+  GESTURE_LOOK_LEFT,
+  GESTURE_LOOK_RIGHT,
+  GESTURE_TILT_UP,
+  GESTURE_TILT_DOWN
 };
 
 GestureKind activeGesture = GESTURE_NONE;
 uint8_t gestureStep = 0;
 unsigned long nextGestureStepMs = 0;
+
 
 /*
  * 屏幕文字状态。
@@ -146,11 +158,13 @@ const unsigned long DEFAULT_DISPLAY_DURATION_MS = 5000;
 const unsigned long MIN_DISPLAY_DURATION_MS = 1000;
 const unsigned long MAX_DISPLAY_DURATION_MS = 10000;
 
+
 /*
  * 屏幕触摸防抖。
  */
 const unsigned long TOUCH_EVENT_DEBOUNCE_MS = 700;
 unsigned long lastTouchEventMs = 0;
+
 
 /*
  * 头顶触摸防抖。
@@ -158,6 +172,35 @@ unsigned long lastTouchEventMs = 0;
 const unsigned long HEAD_TOUCH_DEBOUNCE_MS = 700;
 unsigned long lastHeadTouchEventMs = 0;
 
+
+/*
+ * IMU 用户摇晃检测。
+ *
+ * 第一版只检测加速度变化，
+ * 不保存、不上传原始传感器数据。
+ */
+bool imuReady = false;
+
+float lastAccelX = 0.0f;
+float lastAccelY = 0.0f;
+float lastAccelZ = 0.0f;
+
+unsigned long lastImuReadMs = 0;
+unsigned long lastShakeEventMs = 0;
+
+static constexpr unsigned long IMU_READ_INTERVAL_MS = 50;
+static constexpr unsigned long SHAKE_DEBOUNCE_MS = 1800;
+
+/*
+ * M5Unified 加速度通常以 G 为单位。
+ * 该阈值用于第一版测试。
+ */
+static constexpr float SHAKE_DELTA_THRESHOLD = 1.20f;
+
+
+/*
+ * WAV 文件头。
+ */
 struct __attribute__((packed)) WavHeader {
   char riff[4];
   uint32_t chunkSize;
@@ -175,6 +218,34 @@ struct __attribute__((packed)) WavSubChunk {
   char identifier[4];
   uint32_t chunkSize;
 };
+
+
+/*
+ * 函数声明。
+ */
+void updateGesture();
+void cancelGesture();
+
+void startNod();
+void startGesture(GestureKind gesture, const char* name);
+void startShakeHead();
+void startLookLeft();
+void startLookRight();
+void startTiltUp();
+void startTiltDown();
+
+void sendTouchTapEvent(int32_t x, int32_t y);
+void sendHeadTouchEvent();
+void sendShakeEvent();
+
+void updateTouchInput();
+void updateHeadTouchInput();
+void updateShakeDetection();
+
+void updateSpeechText();
+void updateLedBreath();
+void startHeadTouchLightEffect();
+
 
 /*
  * 从 SD 卡读取并播放 PCM WAV。
@@ -235,7 +306,8 @@ bool playSdWav(const char* filename) {
     header.bitsPerSample > 16 ||
     header.channels == 0 ||
     header.channels > 2 ||
-    header.sampleRate == 0
+    header.sampleRate == 0 ||
+    header.fmtChunkSize < 16
   ) {
     Serial.println(
       "[AUDIO] Unsupported WAV: require PCM, 8/16-bit, mono/stereo"
@@ -245,7 +317,7 @@ bool playSdWav(const char* filename) {
   }
 
   /*
-   * 跳过 fmt chunk 其余内容，并查找 data chunk。
+   * 跳过 fmt chunk 的剩余内容，并查找 data chunk。
    */
   const uint32_t afterFmtOffset =
     offsetof(WavHeader, audioFormat) + header.fmtChunkSize;
@@ -271,7 +343,17 @@ bool playSdWav(const char* filename) {
       break;
     }
 
-    if (!file.seek(file.position() + subChunk.chunkSize)) {
+    uint32_t nextChunkOffset =
+      static_cast<uint32_t>(file.position()) + subChunk.chunkSize;
+
+    /*
+     * WAV chunk 按偶数字节对齐。
+     */
+    if (subChunk.chunkSize & 1U) {
+      nextChunkOffset++;
+    }
+
+    if (!file.seek(nextChunkOffset)) {
       break;
     }
   }
@@ -344,6 +426,10 @@ bool playSdWav(const char* filename) {
   return true;
 }
 
+
+/*
+ * 根据名称播放声音。
+ */
 void playSoundByName(const char* sound) {
   if (sound == nullptr || strcmp(sound, "none") == 0) {
     return;
@@ -362,13 +448,16 @@ void playSoundByName(const char* sound) {
   Serial.printf("[AUDIO] Unknown sound ignored: %s\n", sound);
 }
 
+
+/*
+ * 显示启动信息。
+ *
+ * 只能在 avatar.init() 之前调用。
+ */
 void showBootMessage(
   const char* line1,
   const char* line2 = nullptr
 ) {
-  /*
-   * 只能在 avatar.init() 之前调用。
-   */
   M5.Display.clear(TFT_BLACK);
 
   M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -384,6 +473,10 @@ void showBootMessage(
   }
 }
 
+
+/*
+ * 设置原生表情。
+ */
 void setExpressionByName(const char* expr) {
   if (expr == nullptr) {
     return;
@@ -403,6 +496,11 @@ void setExpressionByName(const char* expr) {
     avatar.setExpression(Expression::Neutral);
   }
 }
+
+
+/*
+ * 设置自定义脸部效果。
+ */
 void setFaceEffectByName(const char* effect) {
   if (effect == nullptr) {
     return;
@@ -457,9 +555,10 @@ void setFaceEffectByName(const char* effect) {
     faceEffectState.set(FaceEffect::None);
 
     Serial.printf(
-        "[FACE] Unknown effect '%s', fallback to none\n",
-        effect
+      "[FACE] Unknown effect '%s', fallback to none\n",
+      effect
     );
+
     return;
   }
 
@@ -467,7 +566,9 @@ void setFaceEffectByName(const char* effect) {
 }
 
 
-
+/*
+ * 限制屏幕文字显示时间。
+ */
 unsigned long clampDisplayDuration(unsigned long durationMs) {
   if (durationMs < MIN_DISPLAY_DURATION_MS) {
     return MIN_DISPLAY_DURATION_MS;
@@ -480,6 +581,10 @@ unsigned long clampDisplayDuration(unsigned long durationMs) {
   return durationMs;
 }
 
+
+/*
+ * 设置屏幕文字及显示时长。
+ */
 void setSpeechTextForDuration(
   const char* text,
   unsigned long durationMs
@@ -491,9 +596,6 @@ void setSpeechTextForDuration(
   activeSpeechText = text;
   avatar.setSpeechText(activeSpeechText.c_str());
 
-  /*
-   * 空文字立即清除，并取消旧的自动清除计时。
-   */
   if (activeSpeechText.length() == 0) {
     speechClearScheduled = false;
     speechClearAtMs = 0;
@@ -503,6 +605,7 @@ void setSpeechTextForDuration(
   }
 
   durationMs = clampDisplayDuration(durationMs);
+
   speechClearAtMs = millis() + durationMs;
   speechClearScheduled = true;
 
@@ -513,6 +616,10 @@ void setSpeechTextForDuration(
   );
 }
 
+
+/*
+ * 自动清除屏幕文字。
+ */
 void updateSpeechText() {
   if (!speechClearScheduled) {
     return;
@@ -535,71 +642,248 @@ void updateSpeechText() {
   Serial.println("[DISPLAY] Speech text auto-cleared");
 }
 
+
+/*
+ * 取消当前舵机动作。
+ */
 void cancelGesture() {
   activeGesture = GESTURE_NONE;
   gestureStep = 0;
   nextGestureStepMs = 0;
 }
 
-void startNod() {
+
+/*
+ * 启动通用舵机动作。
+ */
+void startGesture(GestureKind gesture, const char* name) {
   if (activeGesture != GESTURE_NONE) {
-    Serial.println("[GESTURE] Ignored nod: another gesture is active");
+    Serial.printf(
+      "[GESTURE] Ignored %s: another gesture is active\n",
+      name
+    );
     return;
   }
 
-  activeGesture = GESTURE_NOD;
+  activeGesture = gesture;
   gestureStep = 0;
   nextGestureStepMs = 0;
 
-  Serial.println("[GESTURE] Nod started");
+  Serial.printf("[GESTURE] %s started\n", name);
 }
 
+
+/*
+ * 启动点头。
+ */
+void startNod() {
+  startGesture(GESTURE_NOD, "nod");
+}
+
+
+/*
+ * 启动机器人主动左右摇头。
+ */
+void startShakeHead() {
+  startGesture(GESTURE_SHAKE_HEAD, "shake_head");
+}
+
+
+/*
+ * 启动向左看。
+ */
+void startLookLeft() {
+  startGesture(GESTURE_LOOK_LEFT, "look_left");
+}
+
+
+/*
+ * 启动向右看。
+ */
+void startLookRight() {
+  startGesture(GESTURE_LOOK_RIGHT, "look_right");
+}
+
+
+/*
+ * 启动抬头。
+ */
+void startTiltUp() {
+  startGesture(GESTURE_TILT_UP, "tilt_up");
+}
+
+
+/*
+ * 启动低头。
+ */
+void startTiltDown() {
+  startGesture(GESTURE_TILT_DOWN, "tilt_down");
+}
+
+
+/*
+ * 更新舵机动作。
+ *
+ * 使用保守测试范围：
+ *
+ * X = ±300
+ * Y = 0、50、300、420
+ */
 void updateGesture() {
-  if (activeGesture != GESTURE_NOD) {
+  if (activeGesture == GESTURE_NONE) {
     return;
   }
 
   const unsigned long now = millis();
 
-  if (nextGestureStepMs != 0 && now < nextGestureStepMs) {
+  if (
+    nextGestureStepMs != 0 &&
+    static_cast<long>(now - nextGestureStepMs) < 0
+  ) {
     return;
   }
 
-  switch (gestureStep) {
-    case 0:
-      M5StackChan.Motion.moveY(300, 500);
-      Serial.println("[GESTURE] Nod step 1: Y=30.0");
-      nextGestureStepMs = now + 350;
-      break;
+  switch (activeGesture) {
+    case GESTURE_NOD:
+      switch (gestureStep) {
+        case 0:
+          M5StackChan.Motion.moveY(300, 500);
+          Serial.println("[GESTURE] Nod step 1: Y=300");
+          nextGestureStepMs = now + 350;
+          break;
 
-    case 1:
-      M5StackChan.Motion.moveY(50, 600);
-      Serial.println("[GESTURE] Nod step 2: Y=5.0");
-      nextGestureStepMs = now + 350;
-      break;
+        case 1:
+          M5StackChan.Motion.moveY(50, 600);
+          Serial.println("[GESTURE] Nod step 2: Y=50");
+          nextGestureStepMs = now + 350;
+          break;
 
-    case 2:
-      M5StackChan.Motion.moveY(300, 500);
-      Serial.println("[GESTURE] Nod step 3: Y=30.0");
-      nextGestureStepMs = now + 350;
-      break;
+        case 2:
+          M5StackChan.Motion.moveY(300, 500);
+          Serial.println("[GESTURE] Nod step 3: Y=300");
+          nextGestureStepMs = now + 350;
+          break;
 
-    case 3:
-      M5StackChan.Motion.goHome(500);
-      Serial.println("[GESTURE] Nod complete; returned home");
-      cancelGesture();
+        case 3:
+          M5StackChan.Motion.goHome(500);
+          Serial.println("[GESTURE] Nod complete; returned home");
+          cancelGesture();
+          return;
+
+        default:
+          cancelGesture();
+          return;
+      }
+
+      gestureStep++;
       return;
 
+
+    case GESTURE_SHAKE_HEAD:
+      switch (gestureStep) {
+        case 0:
+          M5StackChan.Motion.moveX(-300, 500);
+          Serial.println("[GESTURE] Shake-head step 1: X=-300");
+          nextGestureStepMs = now + 550;
+          break;
+
+        case 1:
+          M5StackChan.Motion.moveX(300, 500);
+          Serial.println("[GESTURE] Shake-head step 2: X=300");
+          nextGestureStepMs = now + 550;
+          break;
+
+        case 2:
+          M5StackChan.Motion.moveX(-300, 500);
+          Serial.println("[GESTURE] Shake-head step 3: X=-300");
+          nextGestureStepMs = now + 550;
+          break;
+
+        case 3:
+          M5StackChan.Motion.goHome(600);
+          Serial.println("[GESTURE] Shake-head complete");
+          cancelGesture();
+          return;
+
+        default:
+          cancelGesture();
+          return;
+      }
+
+      gestureStep++;
+      return;
+
+
+    case GESTURE_LOOK_LEFT:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveX(-300, 600);
+        Serial.println("[GESTURE] Look-left: X=-300");
+        nextGestureStepMs = now + 900;
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(600);
+        Serial.println("[GESTURE] Look-left complete");
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_LOOK_RIGHT:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveX(300, 600);
+        Serial.println("[GESTURE] Look-right: X=300");
+        nextGestureStepMs = now + 900;
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(600);
+        Serial.println("[GESTURE] Look-right complete");
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_TILT_UP:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveY(420, 600);
+        Serial.println("[GESTURE] Tilt-up: Y=420");
+        nextGestureStepMs = now + 900;
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(600);
+        Serial.println("[GESTURE] Tilt-up complete");
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_TILT_DOWN:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveY(0, 600);
+        Serial.println("[GESTURE] Tilt-down: Y=0");
+        nextGestureStepMs = now + 900;
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(600);
+        Serial.println("[GESTURE] Tilt-down complete");
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_NONE:
     default:
       cancelGesture();
       return;
   }
-
-  gestureStep++;
 }
 
+
 /*
- * 将屏幕触摸事件通过 WebSocket 上报至 Render。
+ * 通过 WebSocket 上报屏幕触摸事件。
  */
 void sendTouchTapEvent(int32_t x, int32_t y) {
   if (!webSocket.isConnected()) {
@@ -629,6 +913,10 @@ void sendTouchTapEvent(int32_t x, int32_t y) {
   );
 }
 
+
+/*
+ * 通过 WebSocket 上报头顶触摸事件。
+ */
 void sendHeadTouchEvent() {
   if (!webSocket.isConnected()) {
     Serial.println(
@@ -651,6 +939,124 @@ void sendHeadTouchEvent() {
   Serial.println("[HEAD] head_touch sent");
 }
 
+
+/*
+ * 通过 WebSocket 上报用户摇晃事件。
+ *
+ * shake 表示用户摇晃机器人，
+ * 不是机器人主动执行摇头动作。
+ */
+void sendShakeEvent() {
+  if (!webSocket.isConnected()) {
+    Serial.println(
+      "[IMU] Shake detected, but WebSocket is disconnected"
+    );
+    return;
+  }
+
+  StaticJsonDocument<128> eventDoc;
+
+  eventDoc["type"] = "robot_event";
+  eventDoc["event"] = "shake";
+  eventDoc["at_ms"] = millis();
+
+  String eventJson;
+  serializeJson(eventDoc, eventJson);
+
+  webSocket.sendTXT(eventJson);
+
+  Serial.println("[IMU] shake sent");
+}
+
+
+/*
+ * 更新 IMU 摇晃检测。
+ */
+void updateShakeDetection() {
+  const unsigned long now = millis();
+
+  if (
+    lastImuReadMs != 0 &&
+    now - lastImuReadMs < IMU_READ_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  lastImuReadMs = now;
+
+  float ax = 0.0f;
+  float ay = 0.0f;
+  float az = 0.0f;
+
+  if (!M5.Imu.getAccel(&ax, &ay, &az)) {
+    if (imuReady) {
+      Serial.println("[IMU] Failed to read acceleration");
+    }
+
+    imuReady = false;
+    return;
+  }
+
+  if (!imuReady) {
+    imuReady = true;
+
+    lastAccelX = ax;
+    lastAccelY = ay;
+    lastAccelZ = az;
+
+    Serial.println("[IMU] Acceleration reading started");
+
+    Serial.printf(
+      "[IMU] ax=%.3f ay=%.3f az=%.3f\n",
+      ax,
+      ay,
+      az
+    );
+
+    return;
+  }
+
+  const float dx = ax - lastAccelX;
+  const float dy = ay - lastAccelY;
+  const float dz = az - lastAccelZ;
+
+  const float deltaMagnitude =
+    sqrtf(dx * dx + dy * dy + dz * dz);
+
+  lastAccelX = ax;
+  lastAccelY = ay;
+  lastAccelZ = az;
+
+  if (
+    deltaMagnitude >= SHAKE_DELTA_THRESHOLD &&
+    (
+      lastShakeEventMs == 0 ||
+      now - lastShakeEventMs >= SHAKE_DEBOUNCE_MS
+    )
+  ) {
+    lastShakeEventMs = now;
+
+    Serial.printf(
+      "[IMU] SHAKE detected, delta=%.3f "
+      "ax=%.3f ay=%.3f az=%.3f\n",
+      deltaMagnitude,
+      ax,
+      ay,
+      az
+    );
+
+    /*
+     * 用户摇晃只上报事件，
+     * 不自动触发舵机动作。
+     */
+    sendShakeEvent();
+  }
+}
+
+
+/*
+ * 更新头顶触摸输入。
+ */
 void updateHeadTouchInput() {
   /*
    * intensities[0] = Front
@@ -666,7 +1072,7 @@ void updateHeadTouchInput() {
     intensities[2] > 0;
 
   /*
-   * 仅在“未触摸 → 触摸”的边缘上报一次。
+   * 仅在“未触摸 -> 触摸”的边缘上报一次。
    */
   static bool wasTouched = false;
 
@@ -691,29 +1097,25 @@ void updateHeadTouchInput() {
     return;
   }
 
-lastHeadTouchEventMs = now;
+  lastHeadTouchEventMs = now;
 
-Serial.printf(
-  "[HEAD] Raw touch detected: front=%u, middle=%u, back=%u\n",
-  static_cast<unsigned>(intensities[0]),
-  static_cast<unsigned>(intensities[1]),
-  static_cast<unsigned>(intensities[2])
-);
+  Serial.printf(
+    "[HEAD] Raw touch detected: front=%u, middle=%u, back=%u\n",
+    static_cast<unsigned>(intensities[0]),
+    static_cast<unsigned>(intensities[1]),
+    static_cast<unsigned>(intensities[2])
+  );
 
-/*
- * 仅在有效的“未触摸 -> 触摸”边缘事件触发，
- * 不会在持续触摸期间反复重启闪烁。
- */
-startHeadTouchLightEffect();
-
-sendHeadTouchEvent();
+  startHeadTouchLightEffect();
+  sendHeadTouchEvent();
 }
 
+
 /*
- * 检查屏幕的新一次按下。
+ * 更新屏幕触摸输入。
  *
  * M5StackChan.update() 已经在 loop() 开头执行，
- * 所以这里不再次调用 M5.update()。
+ * 因此这里不再调用 M5.update()。
  */
 void updateTouchInput() {
   auto touch = M5.Touch.getDetail();
@@ -743,6 +1145,10 @@ void updateTouchInput() {
   sendTouchTapEvent(touch.x, touch.y);
 }
 
+
+/*
+ * WebSocket 事件处理。
+ */
 void webSocketEvent(
   WStype_t type,
   uint8_t* payload,
@@ -752,21 +1158,21 @@ void webSocketEvent(
     case WStype_CONNECTED:
       Serial.println("[WS] Connected to Render");
 
-      /*
-       * 连接成功时只设置基础表情。
-       * 当前 face_effect 状态不强制修改。
-       */
       avatar.setExpression(Expression::Happy);
+      cancelGesture();
       M5StackChan.Motion.goHome(500);
       break;
+
 
     case WStype_DISCONNECTED:
       Serial.println("[WS] Disconnected from Render");
       break;
 
+
     case WStype_ERROR:
       Serial.println("[WS] WebSocket error");
       break;
+
 
     case WStype_TEXT: {
       Serial.printf(
@@ -777,6 +1183,7 @@ void webSocketEvent(
       );
 
       DynamicJsonDocument doc(1024);
+
       DeserializationError error =
         deserializeJson(doc, payload, length);
 
@@ -795,8 +1202,7 @@ void webSocketEvent(
       const char* action = doc["action"];
 
       /*
-       * 只有 Render 明确发送 text_to_display 时才更新文字，
-       * 避免旧版 expression + motion 调用清除已有文字。
+       * 只有 Render 明确发送 text_to_display 时才更新文字。
        */
       JsonVariantConst textToDisplay =
         doc["text_to_display"];
@@ -820,6 +1226,7 @@ void webSocketEvent(
           "[ACTION] Expression: %s\n",
           expression
         );
+
         setExpressionByName(expression);
       }
 
@@ -828,6 +1235,7 @@ void webSocketEvent(
           "[ACTION] Face effect: %s\n",
           faceEffect
         );
+
         setFaceEffectByName(faceEffect);
       }
 
@@ -839,6 +1247,21 @@ void webSocketEvent(
 
         if (strcmp(motion, "nod") == 0) {
           startNod();
+
+        } else if (strcmp(motion, "shake_head") == 0) {
+          startShakeHead();
+
+        } else if (strcmp(motion, "look_left") == 0) {
+          startLookLeft();
+
+        } else if (strcmp(motion, "look_right") == 0) {
+          startLookRight();
+
+        } else if (strcmp(motion, "tilt_up") == 0) {
+          startTiltUp();
+
+        } else if (strcmp(motion, "tilt_down") == 0) {
+          startTiltDown();
 
         } else if (strcmp(motion, "home") == 0) {
           cancelGesture();
@@ -852,11 +1275,18 @@ void webSocketEvent(
 
         } else if (strcmp(motion, "shake") == 0) {
           /*
-           * 暂不执行：尚未在实体设备验证安全范围。
+           * shake 是用户摇晃事件，
+           * 不是机器人主动舵机动作。
            */
           Serial.println(
-            "[GESTURE] Shake ignored: "
-            "not hardware-tested yet"
+            "[GESTURE] 'shake' is a user event, "
+            "not a robot motion"
+          );
+
+        } else {
+          Serial.printf(
+            "[GESTURE] Unknown motion ignored: %s\n",
+            motion
           );
         }
 
@@ -874,11 +1304,13 @@ void webSocketEvent(
           "[ACTION] Sound: %s\n",
           sound
         );
+
         playSoundByName(sound);
       }
 
       break;
     }
+
 
     default:
       break;
@@ -886,11 +1318,14 @@ void webSocketEvent(
 }
 
 
+/*
+ * 根据脸部效果和原生表情获取灯光主题。
+ */
 LedTheme getLedTheme() {
   FaceEffect effect = faceEffectState.get();
 
   /*
-   * 自定义 face_effect 的优先级高于 expression。
+   * 自定义 face_effect 优先级高于 expression。
    */
   switch (effect) {
     case FaceEffect::HeartEyes:
@@ -935,7 +1370,7 @@ LedTheme getLedTheme() {
   }
 
   /*
-   * 没有 face_effect 时，使用原生 expression 的主题。
+   * 没有 face_effect 时使用 expression 主题。
    */
   switch (avatar.getExpression()) {
     case Expression::Happy:
@@ -960,6 +1395,9 @@ LedTheme getLedTheme() {
 }
 
 
+/*
+ * 更新 RGB 呼吸灯。
+ */
 void updateLedBreath() {
   const unsigned long now = millis();
 
@@ -971,99 +1409,77 @@ void updateLedBreath() {
 
   const LedTheme theme = getLedTheme();
 
-  /*
-   * wave 的范围是 0.0 ~ 1.0。
-   */
+  const uint16_t periodMs =
+    theme.periodMs == 0
+      ? 1
+      : theme.periodMs;
+
   const float phase =
-      static_cast<float>(now % theme.periodMs) /
-      static_cast<float>(theme.periodMs);
+    static_cast<float>(now % periodMs) /
+    static_cast<float>(periodMs);
 
   const float wave =
-      (sinf(phase * 6.2831853f) + 1.0f) * 0.5f;
+    (sinf(phase * 6.2831853f) + 1.0f) * 0.5f;
 
-  /*
-   * 基础亮度范围：
-   *
-   * - 最低：该主题最大亮度的 15%
-   * - 最高：该主题最大亮度的 100%
-   *
-   * 以 theme.maxBrightness / 255.0f 为上限，
-   * 避免计算值超过 1.0 而造成 uint8_t 溢出。
-   */
   const float maxBrightness =
-      static_cast<float>(theme.maxBrightness) / 255.0f;
+    static_cast<float>(theme.maxBrightness) / 255.0f;
 
-  const float minBrightness = maxBrightness * 0.15f;
+  const float minBrightness =
+    maxBrightness * 0.15f;
 
   float brightness =
-      minBrightness +
-      (maxBrightness - minBrightness) * wave;
+    minBrightness +
+    (maxBrightness - minBrightness) * wave;
 
   /*
-   * 屏幕有文字时，同色系亮度增强。
-   *
-   * 若文字被 updateSpeechText() 清除，activeSpeechText 会成为空字符串，
-   * 本轮即可自然恢复为普通呼吸灯。
+   * 屏幕有文字时增强亮度。
    */
   if (activeSpeechText.length() > 0) {
     brightness *= SPEAKING_LIGHT_BOOST;
   }
+
   /*
-   * 摸头临时灯效具有最高优先级。
-   *
-   * 两次粉色柔和闪烁：
-   * 亮起 -> 回落 -> 再亮起 -> 再回落。
+   * 头顶触摸临时粉色闪烁。
    */
   bool useHeadTouchPink = false;
 
   if (headTouchLightActive) {
     const unsigned long totalDuration =
-        HEAD_TOUCH_LIGHT_CYCLE_MS * HEAD_TOUCH_LIGHT_FLASH_COUNT;
+      HEAD_TOUCH_LIGHT_CYCLE_MS *
+      HEAD_TOUCH_LIGHT_FLASH_COUNT;
 
     const unsigned long elapsed =
-        now - headTouchLightStartedMs;
+      now - headTouchLightStartedMs;
 
     if (elapsed >= totalDuration) {
       headTouchLightActive = false;
 
-      Serial.println("[LED] Head-touch pink flash finished");
+      Serial.println(
+        "[LED] Head-touch pink flash finished"
+      );
     } else {
       const unsigned long cycleElapsed =
-          elapsed % HEAD_TOUCH_LIGHT_CYCLE_MS;
+        elapsed % HEAD_TOUCH_LIGHT_CYCLE_MS;
 
       const float cyclePhase =
-          static_cast<float>(cycleElapsed) /
-          static_cast<float>(HEAD_TOUCH_LIGHT_CYCLE_MS);
+        static_cast<float>(cycleElapsed) /
+        static_cast<float>(HEAD_TOUCH_LIGHT_CYCLE_MS);
 
-      /*
-       * sin(0 -> PI) 的范围为 0 -> 1 -> 0。
-       */
       const float flashWave =
-          sinf(cyclePhase * 3.14159265f);
+        sinf(cyclePhase * 3.14159265f);
 
-      /*
-       * 摸头时使用固定粉色，并且不再使用当前表情主题色。
-       *
-       * 粉色 RGB：
-       * R = 255
-       * G = 45
-       * B = 150
-       */
       useHeadTouchPink = true;
 
-      /*
-       * 粉色灯效使用独立亮度，避免被当前主题的
-       * maxBrightness 限制得太暗。
-       */
       brightness =
-          (220.0f / 255.0f) *
-          (0.35f + flashWave * 0.65f);
+        (220.0f / 255.0f) *
+        (0.35f + flashWave * 0.65f);
     }
   }
 
-  /*
-   * 防止亮度超过 RGB 可用范围。
-   */
+  if (brightness < 0.0f) {
+    brightness = 0.0f;
+  }
+
   if (brightness > 1.0f) {
     brightness = 1.0f;
   }
@@ -1073,20 +1489,21 @@ void updateLedBreath() {
   uint8_t b;
 
   if (useHeadTouchPink) {
-    /*
-     * 固定粉色摸头灯效。
-     */
     r = static_cast<uint8_t>(255.0f * brightness);
     g = static_cast<uint8_t>(45.0f * brightness);
     b = static_cast<uint8_t>(150.0f * brightness);
   } else {
-    /*
-     * 非摸头期间，恢复原来的 expression /
-     * face_effect 主题色呼吸灯。
-     */
-    r = static_cast<uint8_t>(theme.r * brightness);
-    g = static_cast<uint8_t>(theme.g * brightness);
-    b = static_cast<uint8_t>(theme.b * brightness);
+    r = static_cast<uint8_t>(
+      static_cast<float>(theme.r) * brightness
+    );
+
+    g = static_cast<uint8_t>(
+      static_cast<float>(theme.g) * brightness
+    );
+
+    b = static_cast<uint8_t>(
+      static_cast<float>(theme.b) * brightness
+    );
   }
 
   for (uint8_t i = 0; i < LED_COUNT; ++i) {
@@ -1097,23 +1514,31 @@ void updateLedBreath() {
 }
 
 
-
+/*
+ * 开始头顶触摸粉色灯效。
+ */
 void startHeadTouchLightEffect() {
   headTouchLightActive = true;
   headTouchLightStartedMs = millis();
 
-  Serial.println("[LED] Head-touch soft flash started");
+  Serial.println(
+    "[LED] Head-touch soft flash started"
+  );
 }
 
 
-
+/*
+ * 初始化。
+ */
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
   Serial.println();
+
   Serial.println(
-    "=== StackChan WiFi + Render + Servo + Display + Touch firmware ==="
+    "=== StackChan WiFi + Render + Servo + "
+    "Display + Touch + IMU firmware ==="
   );
 
   /*
@@ -1122,14 +1547,16 @@ void setup() {
   M5StackChan.begin();
 
   /*
- * 让首次 updateLedBreath() 不受 40ms 刷新间隔限制。
- */
-lastLedUpdateMs = millis() - LED_UPDATE_INTERVAL_MS;
-updateLedBreath();
+   * 初始化 RGB 灯。
+   */
+  lastLedUpdateMs =
+    millis() - LED_UPDATE_INTERVAL_MS;
+
+  updateLedBreath();
 
 
   /*
-   * CoreS3 官方 SD 卡初始化。
+   * 初始化 CoreS3 microSD。
    */
   SPI.begin(
     SD_SPI_SCK_PIN,
@@ -1164,14 +1591,20 @@ updateLedBreath();
     Serial.println("[SD] Card mount failed");
   }
 
+
   /*
    * M5Unified 音量范围为 0 至 255。
    */
   M5.Speaker.setVolume(80);
 
+
+  /*
+   * 舵机设置。
+   */
   M5StackChan.Motion.setAutoAngleSyncEnabled(false);
   M5StackChan.Motion.setAutoTorqueReleaseEnabled(true);
   M5StackChan.Motion.goHome(500);
+
 
   /*
    * Avatar 尚未启动，因此这里可以安全操作 M5.Display。
@@ -1181,6 +1614,10 @@ updateLedBreath();
     "Please wait"
   );
 
+
+  /*
+   * 读取已保存的 Render 主机地址。
+   */
   prefs.begin("stackchan", false);
 
   String savedHost =
@@ -1196,6 +1633,10 @@ updateLedBreath();
     ws_host
   );
 
+
+  /*
+   * Wi-Fi 配置。
+   */
   WiFi.mode(WIFI_STA);
 
   WiFiManager wm;
@@ -1231,7 +1672,8 @@ updateLedBreath();
     );
 
     /*
-     * 不设置门户超时，等待用户完成配网。
+     * 不设置门户超时，
+     * 等待用户完成配网。
      */
     wm.startConfigPortal("StackChan-Setup");
   }
@@ -1246,6 +1688,10 @@ updateLedBreath();
     WiFi.localIP().toString().c_str()
   );
 
+
+  /*
+   * 保存本次输入的 Render 地址。
+   */
   const char* enteredHost =
     serverParameter.getValue();
 
@@ -1272,19 +1718,21 @@ updateLedBreath();
     ws_host
   );
 
+
   /*
    * Wi-Fi 配置完成后启动 Avatar。
    */
   avatar.init();
 
   /*
-   * 让 Avatar 的 Balloon 使用 M5GFX 内置中文点阵字体。
+   * 让 Avatar 的 Balloon 使用中文字体。
    */
   avatar.setSpeechFont(&fonts::efontCN_10);
 
+
   /*
    * 默认状态：
-   * - 原生 neutral 表情；
+   * - neutral 表情；
    * - 原生眼睛；
    * - 无文字。
    */
@@ -1292,6 +1740,10 @@ updateLedBreath();
   avatar.setExpression(Expression::Neutral);
   avatar.setSpeechText("");
 
+
+  /*
+   * 如果没有 Wi-Fi，不启动 WebSocket。
+   */
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println(
       "[WIFI] Not connected; WebSocket will not start"
@@ -1306,9 +1758,14 @@ updateLedBreath();
       "[WS] Open StackChan-Setup and fill "
       "Render Server Host."
     );
+
     return;
   }
 
+
+  /*
+   * 启动安全 WebSocket。
+   */
   Serial.printf(
     "[WS] Connecting to wss://%s:%u%s\n",
     ws_host,
@@ -1318,6 +1775,7 @@ updateLedBreath();
 
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(5000);
+
   webSocket.beginSSL(
     ws_host,
     ws_port,
@@ -1325,6 +1783,10 @@ updateLedBreath();
   );
 }
 
+
+/*
+ * 主循环。
+ */
 void loop() {
   M5StackChan.update();
   webSocket.loop();
@@ -1333,6 +1795,7 @@ void loop() {
   updateSpeechText();
   updateTouchInput();
   updateHeadTouchInput();
+  updateShakeDetection();
 
   updateLedBreath();
 
