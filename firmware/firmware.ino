@@ -1,8 +1,12 @@
-
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <M5StackChan.h>
+
 #include <Avatar.h>
+#include <Eyeblow.h>
+#include <Face.h>
+#include <Mouth.h>
+
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
@@ -11,10 +15,25 @@
 #include <SPI.h>
 #include <SD.h>
 
+#include "HeartEye.h"
 
 using namespace m5avatar;
 
-Avatar avatar;
+/*
+ * Face 构造参数顺序：
+ * mouth, right eye, left eye, right eyebrow, left eyebrow
+ *
+ * Avatar → Face → 各 Drawable 的释放由库析构链负责；
+ * 因此此处 new 的对象不要在其他地方手动 delete。
+ */
+Avatar avatar(
+    new Face(
+        new Mouth(50, 90, 4, 60),
+        new HeartEye(false),          // 右眼
+        new HeartEye(true),           // 左眼
+        new Eyeblow(32, 0, false),    // 右眉
+        new Eyeblow(32, 0, true)));   // 左眉
+
 WebSocketsClient webSocket;
 Preferences prefs;
 
