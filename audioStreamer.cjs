@@ -20,7 +20,7 @@ const BITS_PER_SAMPLE = 16;
 const CHUNK_SIZE = 4096;
 
 const DOWNLOAD_TIMEOUT_MS = 15000;
-const CHUNK_ACK_TIMEOUT_MS = 10000;
+const CHUNK_ACK_TIMEOUT_MS = 30000;
 const AUDIO_READY_TIMEOUT_MS = 10000;
 const MAX_BUFFERED_AMOUNT_BYTES = 256 * 1024;
 
@@ -551,45 +551,75 @@ async function playRobotAudioInner(
     let leftover = Buffer.alloc(0);
     let bytesSent = 0;
 
-    async function sendPcmChunk(chunk) {
-      await waitForSendBufferDrain(
-        robotSocket
-      );
 
-      if (
-        audioTaskCancelled ||
-        !isSocketOpen(robotSocket)
-      ) {
-        throw new Error(
-          'audio_task_cancelled_or_socket_closed'
-        );
-      }
+   async function sendPcmChunk(chunk) {
+  await waitForSendBufferDrain(
+    robotSocket
+  );
 
-      console.log(
-        `[audio] sending PCM chunk: ` +
-        `${chunk.length} bytes, ` +
-        `stream_id=${streamId}`
-      );
+  if (
+    audioTaskCancelled ||
+    !isSocketOpen(robotSocket)
+  ) {
+    throw new Error(
+      'audio_task_cancelled_or_socket_closed'
+    );
+  }
 
-      robotSocket.send(chunk, {
-        binary: true,
-        compress: false
-      });
+  console.log(
+    `[audio] sending PCM chunk: ` +
+    `${chunk.length} bytes, ` +
+    `stream_id=${streamId}`
+  );
 
-      bytesSent += chunk.length;
+  robotSocket.send(chunk, {
+    binary: true,
+    compress: false
+  });
 
-      const ackBytes = await waitForEvent(
-        emitter,
-        'audio_chunk_ack',
-        CHUNK_ACK_TIMEOUT_MS
-      );
+  bytesSent += chunk.length;
 
-      console.log(
-        `[audio] received PCM ACK: ` +
-        `${ackBytes} bytes, ` +
-        `stream_id=${streamId}`
-      );
+  /*
+   * ACK 超时不代表连接已死，可能只是机器人端
+   * 播放/调度偶发卡顿。第一次超时时，只要
+   * socket 还开着、任务没被取消，就再宽限等待
+   * 一轮，而不是直接判整条流失败。
+   */
+  let ackBytes;
+
+  try {
+    ackBytes = await waitForEvent(
+      emitter,
+      'audio_chunk_ack',
+      CHUNK_ACK_TIMEOUT_MS
+    );
+  } catch (error) {
+    if (
+      audioTaskCancelled ||
+      !isSocketOpen(robotSocket)
+    ) {
+      throw error;
     }
+
+    console.warn(
+      `[audio] ACK 超时，给予一次宽限重试: ` +
+      `stream_id=${streamId}, ` +
+      `已发送=${bytesSent} bytes`
+    );
+
+    ackBytes = await waitForEvent(
+      emitter,
+      'audio_chunk_ack',
+      CHUNK_ACK_TIMEOUT_MS
+    );
+  }
+
+  console.log(
+    `[audio] received PCM ACK: ` +
+    `${ackBytes} bytes, ` +
+    `stream_id=${streamId}`
+  );
+}
 
     /*
      * 监听机器人主动中止。
