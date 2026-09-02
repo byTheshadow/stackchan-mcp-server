@@ -1538,13 +1538,6 @@ void setExpressionByName(
 }
 
 
-void setFaceEffectByName(
-  const char* effect
-) {
-  if (effect == nullptr) {
-    return;
-  }
-
   /*
    * 远程新指令覆盖临时摇晃表情。
    */
@@ -2121,26 +2114,6 @@ void sendHeadTouchEvent() {
 }
 
 
-void sendShakeEvent() {
-  if (!webSocket.isConnected()) {
-    return;
-  }
-
-  StaticJsonDocument<256> doc;
-
-  doc["type"] = "shake";
-
-  String output;
-  serializeJson(doc, output);
-
-  webSocket.sendTXT(output);
-
-  Serial.println(
-    "[IMU] Shake detected"
-  );
-}
-
-
 void setFaceEffectByName(
   const char* effect
 ) {
@@ -2708,16 +2681,6 @@ void sendTouchTapEvent(
     static_cast<long>(y)
   );
 }
-
-
-void sendHeadTouchEvent() {
-  if (!webSocket.isConnected()) {
-    Serial.println(
-      "[HEAD] WebSocket disconnected"
-    );
-
-    return;
-  }
 
   StaticJsonDocument<128> doc;
 
