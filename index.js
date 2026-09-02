@@ -191,18 +191,24 @@ wss.on('connection', (ws, req) => {
     /*
      * 音频协议消息不进入实体事件队列。
      */
-    if (
-      data &&
-      typeof data.type === 'string' &&
-      data.type.startsWith('audio_')
-    ) {
-      attachAudioProtocolHandlers(
-        ROBOT_ID,
-        data
-      );
+   if (
+  data &&
+  typeof data.type === 'string' &&
+  data.type.startsWith('audio_')
+) {
+  console.log(
+    '[audio] robot protocol message:',
+    JSON.stringify(data)
+  );
 
-      return;
-    }
+  attachAudioProtocolHandlers(
+    ROBOT_ID,
+    data
+  );
+
+  return;
+}
+
 
     const isScreenTouchEvent =
       data &&
