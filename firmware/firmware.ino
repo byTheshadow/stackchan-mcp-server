@@ -888,6 +888,7 @@ void sendAudioReadyEvent(const String& streamId) {
 /*
  * 通过 WebSocket 确认已写入的累计字节数（用于 Render 端流控）。
  */
+ 
  void sendAudioChunkAckEvent(
   const String& streamId,
   uint32_t bytesWritten
@@ -919,17 +920,13 @@ void sendAudioReadyEvent(const String& streamId) {
     json.c_str()
   );
 
-  const bool sent =
-    webSocket.sendTXT(
-      json.c_str(),
-      json.length()
-    );
+  webSocket.sendTXT(json);
 
-  Serial.printf(
-    "[AUDIO-STREAM] ACK send result: %s\n",
-    sent ? "success" : "failed"
+  Serial.println(
+    "[AUDIO-STREAM] ACK send requested"
   );
 }
+
 
 
 
