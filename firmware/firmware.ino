@@ -732,20 +732,22 @@ bool beginAudioStream(
   /*
    * 发送累计写入字节数。
    */
-  sendAudioChunkAckEvent(
-    audioStreamId,
-    audioStreamBytesWritten
-  );
+sendAudioChunkAckEvent(
+  audioStreamId,
+  static_cast<uint32_t>(written)
+);
 
-  Serial.printf(
-    "[AUDIO-STREAM] Chunk ACK sent: "
-    "stream_id=%s, total=%lu\n",
-    audioStreamId.c_str(),
-    static_cast<unsigned long>(
-      audioStreamBytesWritten
-    )
-  );
-}
+ 
+ Serial.printf(
+  "[AUDIO-STREAM] Chunk ACK sent: "
+  "stream_id=%s, chunk=%u, total=%lu\n",
+  audioStreamId.c_str(),
+  static_cast<unsigned>(written),
+  static_cast<unsigned long>(
+    audioStreamBytesWritten
+  )
+);
+
 
 
 
@@ -1767,64 +1769,87 @@ void webSocketEvent(
       Serial.println("[WS] WebSocket error");
       break;
 
-    case WStype_BIN: {
-      Serial.printf(
-        "[WS] Binary frame received: %u bytes\n",
-        static_cast<unsigned>(length)
-      );
+  case WStype_BIN: {
+  Serial.printf(
+    "[WS] Binary message received: %u bytes\n",
+    static_cast<unsigned>(length)
+  );
 
-      writeAudioStreamChunk(
-        payload,
-        length
-      );
+  /*
+   * 非分片的完整二进制消息。
+   */
+  writeAudioStreamChunk(
+    payload,
+    length
+  );
 
-      break;
-    }
-
-
-    case WStype_FRAGMENT_BIN_START: {
-      Serial.printf(
-        "[WS] Binary fragment start: %u bytes\n",
-        static_cast<unsigned>(length)
-      );
-
-      writeAudioStreamChunk(
-        payload,
-        length
-      );
-
-      break;
-    }
+  break;
+}
 
 
-    case WStype_FRAGMENT: {
-      Serial.printf(
-        "[WS] Binary fragment: %u bytes\n",
-        static_cast<unsigned>(length)
-      );
+case WStype_FRAGMENT_BIN_START: {
+  Serial.printf(
+    "[WS] Binary message start: %u bytes\n",
+    static_cast<unsigned>(length)
+  );
 
-      writeAudioStreamChunk(
-        payload,
-        length
-      );
+  /*
+   * 当前 Node.js ws 发送的 4096 字节数据
+   * 会从这里进入。
+   */
+  if (length > 0) {
+    writeAudioStreamChunk(
+      payload,
+      length
+    );
+  }
 
-      break;
-    }
+  break;
+}
 
 
-    case WStype_FRAGMENT_FIN: {
-      Serial.printf(
-        "[WS] Binary fragment finish: %u bytes\n",
-        static_cast<unsigned>(length)
-      );
+case WStype_FRAGMENT: {
+  Serial.printf(
+    "[WS] Binary continuation: %u bytes\n",
+    static_cast<unsigned>(length)
+  );
 
-      writeAudioStreamChunk(
-        payload,
-        length
-      );
+  /*
+   * 只有确实带有数据的 continuation
+   * 才写入音频文件。
+   */
+  if (length > 0) {
+    writeAudioStreamChunk(
+      payload,
+      length
+    );
+  }
 
-      break;
-    }
+  break;
+}
+
+
+case WStype_FRAGMENT_FIN: {
+  Serial.printf(
+    "[WS] Binary message finish: %u bytes\n",
+    static_cast<unsigned>(length)
+  );
+
+  /*
+   * 当前实际情况 length=0。
+   * 它只是消息结束通知，不能再次写入，
+   * 也不能再次发送 ACK。
+   */
+  if (length > 0) {
+    writeAudioStreamChunk(
+      payload,
+      length
+    );
+  }
+
+  break;
+}
+
 
 
 
