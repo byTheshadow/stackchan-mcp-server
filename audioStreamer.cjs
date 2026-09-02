@@ -475,7 +475,10 @@ async function playRobotAudioInner(
         `stream_id=${streamId}`
       );
 
-      robotSocket.send(chunk);
+      robotSocket.send(chunk, {
+  binary: true
+});
+
       bytesSent += chunk.length;
 
       const ackBytes = await waitForEvent(

@@ -660,12 +660,12 @@ bool beginAudioStream(
  * 接收一帧二进制 PCM 数据并追加写入临时文件。
  */
 
-void writeAudioStreamChunk(
+ void writeAudioStreamChunk(
   const uint8_t* data,
   size_t length
 ) {
   Serial.printf(
-    "[AUDIO-STREAM] Binary frame received: %u bytes\n",
+    "[AUDIO-STREAM] Binary PCM received: %u bytes\n",
     static_cast<unsigned>(length)
   );
 
@@ -691,7 +691,7 @@ void writeAudioStreamChunk(
 
   if (!audioStreamFile) {
     Serial.println(
-      "[AUDIO-STREAM] Audio file is not open"
+      "[AUDIO-STREAM] Audio stream file is not open"
     );
 
     sendAudioAbortEvent(
@@ -714,8 +714,7 @@ void writeAudioStreamChunk(
 
   if (written != length) {
     Serial.println(
-      "[AUDIO-STREAM] SD write failed, "
-      "aborting stream"
+      "[AUDIO-STREAM] SD write failed"
     );
 
     sendAudioAbortEvent(
@@ -731,9 +730,7 @@ void writeAudioStreamChunk(
     static_cast<uint32_t>(written);
 
   /*
-   * bytes_written 这里发送累计写入字节数。
-   * 当前 Render 端只使用 ACK 事件进行流控，
-   * 不依赖该字段的具体数值。
+   * 发送累计写入字节数。
    */
   sendAudioChunkAckEvent(
     audioStreamId,
@@ -741,15 +738,15 @@ void writeAudioStreamChunk(
   );
 
   Serial.printf(
-    "[AUDIO-STREAM] ACK sent: stream_id=%s, "
-    "chunk=%u, total=%lu\n",
+    "[AUDIO-STREAM] Chunk ACK sent: "
+    "stream_id=%s, total=%lu\n",
     audioStreamId.c_str(),
-    static_cast<unsigned>(written),
     static_cast<unsigned long>(
       audioStreamBytesWritten
     )
   );
 }
+
 
 
 
@@ -896,7 +893,7 @@ void sendAudioReadyEvent(const String& streamId) {
   if (!webSocket.isConnected()) {
     Serial.println(
       "[AUDIO-STREAM] Cannot send ACK: "
-      "WebSocket is disconnected"
+      "WebSocket disconnected"
     );
     return;
   }
@@ -923,9 +920,10 @@ void sendAudioReadyEvent(const String& streamId) {
   webSocket.sendTXT(json);
 
   Serial.println(
-    "[AUDIO-STREAM] ACK send requested"
+    "[AUDIO-STREAM] ACK sendTXT completed"
   );
 }
+
 
 
 
@@ -1764,7 +1762,7 @@ void webSocketEvent(
 
 case WStype_BIN: {
   Serial.printf(
-    "[WS] Binary frame callback: %u bytes\n",
+    "[WS] Binary frame received: %u bytes\n",
     static_cast<unsigned>(length)
   );
 
