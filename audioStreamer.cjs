@@ -307,28 +307,36 @@ async function playRobotAudio(
 
     let leftover = Buffer.alloc(0);
     let bytesSent = 0;
+async function sendPcmChunk(chunk) {
+  await waitForSendBufferDrain(robotSocket);
 
-    async function sendPcmChunk(chunk) {
-      await waitForSendBufferDrain(robotSocket);
+  if (
+    !robotSocket ||
+    robotSocket.readyState !== OPEN_STATE
+  ) {
+    throw new Error(
+      'robot_socket_closed_during_send'
+    );
+  }
 
-      if (
-        !robotSocket ||
-        robotSocket.readyState !== OPEN_STATE
-      ) {
-        throw new Error(
-          'robot_socket_closed_during_send'
-        );
-      }
+  console.log(
+    `[audio] sending PCM chunk: ${chunk.length} bytes`
+  );
 
-      robotSocket.send(chunk);
-      bytesSent += chunk.length;
+  robotSocket.send(chunk);
+  bytesSent += chunk.length;
 
-      await waitForEvent(
-        emitter,
-        'audio_chunk_ack',
-        CHUNK_ACK_TIMEOUT_MS
-      );
-    }
+  const bytesWritten = await waitForEvent(
+    emitter,
+    'audio_chunk_ack',
+    CHUNK_ACK_TIMEOUT_MS
+  );
+
+  console.log(
+    `[audio] received PCM ACK: ${bytesWritten} bytes`
+  );
+}
+
 const abortWatcher = waitForEvent(
   emitter,
   'audio_abort',
