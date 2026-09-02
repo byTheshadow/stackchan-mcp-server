@@ -2139,32 +2139,6 @@ void sendShakeEvent() {
     "[IMU] Shake detected"
   );
 }
-      Expression::Sad
-    );
-  } else if (
-    strcmp(expression, "angry") == 0
-  ) {
-    avatar.setExpression(
-      Expression::Angry
-    );
-  } else if (
-    strcmp(expression, "doubt") == 0
-  ) {
-    avatar.setExpression(
-      Expression::Doubt
-    );
-  } else if (
-    strcmp(expression, "sleepy") == 0
-  ) {
-    avatar.setExpression(
-      Expression::Sleepy
-    );
-  } else {
-    avatar.setExpression(
-      Expression::Neutral
-    );
-  }
-}
 
 
 void setFaceEffectByName(
