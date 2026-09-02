@@ -327,7 +327,7 @@ const controlRobotTool = {
   name: 'control_robot',
 
   description:
-    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证的保守舵机动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。当前主动动作支持 nod、shake_head、look_left、look_right、tilt_up、home 和 none。shake 是用户摇晃实体后由 IMU 上报的事件，不是机器人主动动作，不能通过本工具触发。不支持任意角度、自定义动作序列、跳舞、TTS、录音或自定义灯光命令。',
+    '控制 StackChan 实体身体的当前状态与互动反馈。可单独或组合设置基础表情、脸部强化效果、简短屏幕文字、舵机动作和短提示音。所有参数均为可选。当前主动动作支持 nod、shake_head、look_left、look_right、tilt_up、home 和 none。',
 
   inputSchema: {
     type: 'object',
@@ -344,7 +344,7 @@ const controlRobotTool = {
           'neutral'
         ],
         description:
-          '必填。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。'
+          '可选。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。'
       },
 
       face_effect: {
@@ -392,12 +392,19 @@ const controlRobotTool = {
           '可选。显示在实体屏幕上的文字，最多 80 个字符。'
       },
 
+      text: {
+        type: 'string',
+        maxLength: 80,
+        description:
+          '可选。text_to_display 的别名，显示在屏幕上的文字。'
+      },
+
       display_duration_ms: {
         type: 'integer',
         minimum: 1000,
         maximum: 10000,
         description:
-          '屏幕文字的显示时长，单位为毫秒。'
+          '可选。屏幕文字的显示时长，单位为毫秒（默认 5000）。'
       },
 
       text_to_speak: {
@@ -414,15 +421,14 @@ const controlRobotTool = {
           'emotion'
         ],
         description:
-          '播放 SD 卡中已验证的短 WAV 提示音。'
+          '可选。播放 SD 卡中已验证的短 WAV 提示音。'
       }
     },
 
-    required: [
-      'expression'
-    ]
+    required: []
   }
 };
+
 
 const getRobotEventsTool = {
   name: 'get_robot_events',
@@ -501,91 +507,45 @@ const stopRobotAudioTool = {
 };
 
 function normalizeRobotArguments(args = {}) {
-  const allowedExpressions = [
-    'happy',
-    'sad',
-    'angry',
-    'doubt',
-    'sleepy',
-    'neutral'
-  ];
+  const normalized = {};
 
-  const allowedFaceEffects = [
-    'none',
-    'heart_eyes',
-    'sparkle_eyes',
-    'dizzy_eyes',
-    'tear_eyes',
-    'surprised_face',
-    'pout_face',
-    'shy_face',
-    'smug_face',
-    'confused_face',
-    'laugh_face',
-    'kiss_face',
-    'nervous_face',
-    'relieved_face',
-    'determined_face'
-  ];
+  // 1. 处理表情（有传才更新）
+  if (args.expression && allowedExpressions.includes(args.expression)) {
+    normalized.expression = args.expression;
+  }
 
-  const allowedMotions = [
-    'nod',
-    'shake_head',
-    'look_left',
-    'look_right',
-    'tilt_up',
-    'home',
-    'none'
-  ];
+  // 2. 处理脸部特效（有传才更新）
+  if (args.face_effect && allowedFaceEffects.includes(args.face_effect)) {
+    normalized.face_effect = args.face_effect;
+  }
 
-  const allowedSounds = [
-    'none',
-    'message',
-    'emotion'
-  ];
+  // 3. 处理舵机动作（有传才触发）
+  if (args.motion && allowedMotions.includes(args.motion)) {
+    normalized.motion = args.motion;
+  }
 
-  const normalized = {
-    expression: allowedExpressions.includes(
-      args.expression
-    )
-      ? args.expression
-      : 'neutral',
+  // 4. 处理提示音（有传才播放）
+  if (args.sound && allowedSounds.includes(args.sound)) {
+    normalized.sound = args.sound;
+  }
 
-    face_effect: allowedFaceEffects.includes(
-      args.face_effect
-    )
-      ? args.face_effect
-      : 'none',
+  // 5. 处理文字（同时兼容 text_to_display、text、message、content）
+  const rawText =
+    args.text_to_display ??
+    args.text ??
+    args.message ??
+    args.content;
 
-    motion: allowedMotions.includes(
-      args.motion
-    )
-      ? args.motion
-      : 'none',
-
-    sound: allowedSounds.includes(
-      args.sound
-    )
-      ? args.sound
-      : 'none'
-  };
-
-  if (
-    typeof args.text_to_display === 'string'
-  ) {
-    normalized.text_to_display =
-      sanitizeDisplayText(
-        args.text_to_display
-      );
-
-    normalized.display_duration_ms =
-      normalizeDisplayDuration(
-        args.display_duration_ms
-      );
+  if (typeof rawText === 'string' && rawText.length > 0) {
+    normalized.text_to_display = sanitizeDisplayText(rawText);
+    normalized.display_duration_ms = normalizeDisplayDuration(
+      args.display_duration_ms ?? args.duration_ms
+    );
   }
 
   return normalized;
 }
+
 
 function sendRobotControl(args = {}) {
   const payload = {
