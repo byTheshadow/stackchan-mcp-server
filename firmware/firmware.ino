@@ -237,6 +237,48 @@ struct __attribute__((packed)) WavSubChunk {
 
 
 /*
+ * 流式音频接收（Render 端 MP3 -> PCM 管道转码后写入 SD 卡）。
+ *
+ * 协议：
+ * - audio_start（JSON 文本帧）：开始一路新的 PCM 流；
+ * - 二进制帧：裸 PCM s16le 数据，原样追加写入；
+ * - audio_end（JSON 文本帧）：流结束，回写 WAV 头并播放；
+ * - audio_stop（JSON 文本帧）：中止当前流，清理临时文件。
+ *
+ * 落盘策略（节省 SD 空间、RAM 恒定）：
+ * - 开始时创建 /audio.wav.part，先写入 44 字节占位 WAV 头；
+ * - 后续二进制帧的 PCM 数据直接追加写入同一文件；
+ * - audio_end 时以 "r+" 模式重新打开该文件（不截断），
+ *   回写正确的 WAV 头，再 rename 为 /audio.wav 并复用 playSdWav()。
+ *
+ * 重要细节：ESP32 SD 库的 FILE_WRITE 宏通常对应
+ * fopen(path, "w+")，会截断已有内容。因此回写头部时
+ * 绝不能再次用 FILE_WRITE 打开该文件，必须使用 "r+"，
+ * 否则已经写入的 PCM 数据会被清空。
+ */
+enum AudioStreamState {
+  AUDIO_STREAM_IDLE = 0,
+  AUDIO_STREAM_RECEIVING,
+};
+
+AudioStreamState audioStreamState = AUDIO_STREAM_IDLE;
+
+String audioStreamId = "";
+
+uint32_t audioStreamSampleRate = 16000;
+uint16_t audioStreamChannels = 1;
+uint16_t audioStreamBitsPerSample = 16;
+
+File audioStreamFile;
+uint32_t audioStreamBytesWritten = 0;
+
+static const char* AUDIO_STREAM_PART_FILENAME = "/audio.wav.part";
+static const char* AUDIO_STREAM_FINAL_FILENAME = "/audio.wav";
+
+static constexpr size_t AUDIO_STREAM_WAV_HEADER_SIZE = 44;
+
+
+/*
  * 函数声明。
  */
 void updateGesture();
@@ -261,6 +303,29 @@ void updateShakeDetection();
 void updateSpeechText();
 void updateLedBreath();
 void startHeadTouchLightEffect();
+
+void buildAudioStreamWavHeader(
+  uint8_t* buffer,
+  uint32_t sampleRate,
+  uint16_t channels,
+  uint16_t bitsPerSample,
+  uint32_t dataSize
+);
+
+bool beginAudioStream(
+  const String& streamId,
+  uint32_t sampleRate,
+  uint16_t channels,
+  uint16_t bitsPerSample
+);
+
+void writeAudioStreamChunk(const uint8_t* data, size_t length);
+void finishAudioStream(const String& streamId);
+void abortAudioStream();
+
+void sendAudioReadyEvent(const String& streamId);
+void sendAudioChunkAckEvent(const String& streamId, uint32_t bytesWritten);
+void sendAudioAbortEvent(const String& streamId, const char* reason);
 
 
 /*
@@ -440,6 +505,358 @@ bool playSdWav(const char* filename) {
 
   Serial.println("[AUDIO] WAV data queued");
   return true;
+}
+
+
+/*
+ * 构造一个标准 44 字节 canonical WAV 头，写入 buffer。
+ *
+ * buffer 必须至少有 AUDIO_STREAM_WAV_HEADER_SIZE (44) 字节。
+ * 该布局与 playSdWav() 里 WavHeader + "data" WavSubChunk
+ * 期望读取到的字节完全一致（小端序，ESP32 原生字节序）。
+ */
+void buildAudioStreamWavHeader(
+  uint8_t* buffer,
+  uint32_t sampleRate,
+  uint16_t channels,
+  uint16_t bitsPerSample,
+  uint32_t dataSize
+) {
+  const uint16_t bytesPerSample =
+    static_cast<uint16_t>(bitsPerSample / 8);
+
+  const uint32_t byteRate =
+    sampleRate * channels * bytesPerSample;
+
+  const uint16_t blockAlign =
+    static_cast<uint16_t>(channels * bytesPerSample);
+
+  const uint32_t riffChunkSize = 36 + dataSize;
+  const uint32_t fmtChunkSize = 16;
+  const uint16_t audioFormat = 1; // PCM
+
+  size_t offset = 0;
+
+  memcpy(buffer + offset, "RIFF", 4);
+  offset += 4;
+
+  memcpy(buffer + offset, &riffChunkSize, sizeof(riffChunkSize));
+  offset += sizeof(riffChunkSize);
+
+  memcpy(buffer + offset, "WAVE", 4);
+  offset += 4;
+
+  memcpy(buffer + offset, "fmt ", 4);
+  offset += 4;
+
+  memcpy(buffer + offset, &fmtChunkSize, sizeof(fmtChunkSize));
+  offset += sizeof(fmtChunkSize);
+
+  memcpy(buffer + offset, &audioFormat, sizeof(audioFormat));
+  offset += sizeof(audioFormat);
+
+  memcpy(buffer + offset, &channels, sizeof(channels));
+  offset += sizeof(channels);
+
+  memcpy(buffer + offset, &sampleRate, sizeof(sampleRate));
+  offset += sizeof(sampleRate);
+
+  memcpy(buffer + offset, &byteRate, sizeof(byteRate));
+  offset += sizeof(byteRate);
+
+  memcpy(buffer + offset, &blockAlign, sizeof(blockAlign));
+  offset += sizeof(blockAlign);
+
+  memcpy(buffer + offset, &bitsPerSample, sizeof(bitsPerSample));
+  offset += sizeof(bitsPerSample);
+
+  memcpy(buffer + offset, "data", 4);
+  offset += 4;
+
+  memcpy(buffer + offset, &dataSize, sizeof(dataSize));
+  offset += sizeof(dataSize);
+
+  // offset 此时应等于 AUDIO_STREAM_WAV_HEADER_SIZE (44)。
+}
+
+
+/*
+ * 开始一路新的流式 PCM 接收。
+ *
+ * 如果当前已有正在接收的流，视为被新流打断：
+ * 先中止旧流并清理其临时文件，再开始新流。
+ */
+bool beginAudioStream(
+  const String& streamId,
+  uint32_t sampleRate,
+  uint16_t channels,
+  uint16_t bitsPerSample
+) {
+  if (!sdCardReady) {
+    Serial.println("[AUDIO-STREAM] SD card not ready, cannot start stream");
+    return false;
+  }
+
+  if (sampleRate == 0 || channels == 0 || channels > 2 ||
+      (bitsPerSample != 8 && bitsPerSample != 16)) {
+    Serial.println("[AUDIO-STREAM] Invalid stream parameters");
+    return false;
+  }
+
+  if (audioStreamState == AUDIO_STREAM_RECEIVING) {
+    Serial.println(
+      "[AUDIO-STREAM] New audio_start interrupts the previous stream"
+    );
+    abortAudioStream();
+  }
+
+  if (SD.exists(AUDIO_STREAM_PART_FILENAME)) {
+    SD.remove(AUDIO_STREAM_PART_FILENAME);
+  }
+
+  /*
+   * FILE_WRITE 在 ESP32 SD 库上等价于以截断方式打开，
+   * 这里正是我们想要的：确保从空文件开始。
+   */
+  audioStreamFile = SD.open(AUDIO_STREAM_PART_FILENAME, FILE_WRITE);
+
+  if (!audioStreamFile) {
+    Serial.println("[AUDIO-STREAM] Failed to create part file");
+    return false;
+  }
+
+  uint8_t placeholder[AUDIO_STREAM_WAV_HEADER_SIZE] = {0};
+
+  if (
+    audioStreamFile.write(placeholder, AUDIO_STREAM_WAV_HEADER_SIZE) !=
+    AUDIO_STREAM_WAV_HEADER_SIZE
+  ) {
+    Serial.println("[AUDIO-STREAM] Failed to write placeholder header");
+    audioStreamFile.close();
+    SD.remove(AUDIO_STREAM_PART_FILENAME);
+    return false;
+  }
+
+  audioStreamId = streamId;
+  audioStreamSampleRate = sampleRate;
+  audioStreamChannels = channels;
+  audioStreamBitsPerSample = bitsPerSample;
+  audioStreamBytesWritten = 0;
+  audioStreamState = AUDIO_STREAM_RECEIVING;
+
+  Serial.printf(
+    "[AUDIO-STREAM] Started stream_id=%s rate=%lu channels=%u bits=%u\n",
+    streamId.c_str(),
+    static_cast<unsigned long>(sampleRate),
+    static_cast<unsigned>(channels),
+    static_cast<unsigned>(bitsPerSample)
+  );
+
+  return true;
+}
+
+
+/*
+ * 接收一帧二进制 PCM 数据并追加写入临时文件。
+ */
+void writeAudioStreamChunk(const uint8_t* data, size_t length) {
+  if (audioStreamState != AUDIO_STREAM_RECEIVING) {
+    Serial.println(
+      "[AUDIO-STREAM] Binary frame ignored: no active stream"
+    );
+    return;
+  }
+
+  if (data == nullptr || length == 0) {
+    return;
+  }
+
+  const size_t written = audioStreamFile.write(data, length);
+
+  if (written != length) {
+    Serial.println("[AUDIO-STREAM] SD write failed, aborting stream");
+    sendAudioAbortEvent(audioStreamId, "sd_write_failed");
+    abortAudioStream();
+    return;
+  }
+
+  audioStreamBytesWritten += static_cast<uint32_t>(written);
+
+  sendAudioChunkAckEvent(audioStreamId, audioStreamBytesWritten);
+}
+
+
+/*
+ * 结束当前流：回写正确的 WAV 头，
+ * 重命名为最终文件，并复用 playSdWav() 播放。
+ */
+void finishAudioStream(const String& streamId) {
+  if (audioStreamState != AUDIO_STREAM_RECEIVING) {
+    Serial.println("[AUDIO-STREAM] audio_end ignored: no active stream");
+    return;
+  }
+
+  if (streamId.length() > 0 && streamId != audioStreamId) {
+    Serial.printf(
+      "[AUDIO-STREAM] audio_end stream_id mismatch: expected=%s got=%s\n",
+      audioStreamId.c_str(),
+      streamId.c_str()
+    );
+    return;
+  }
+
+  audioStreamFile.flush();
+  audioStreamFile.close();
+
+  const uint32_t dataSize = audioStreamBytesWritten;
+
+  /*
+   * 关键：这里必须用 "r+" 重新打开，不能用 FILE_WRITE。
+   * "r+" 不会截断已有内容，且初始文件位置在 0，
+   * 可以直接覆盖写入前 44 字节的占位头。
+   */
+  File finalizeFile = SD.open(AUDIO_STREAM_PART_FILENAME, "r+");
+
+  if (!finalizeFile) {
+    Serial.println(
+      "[AUDIO-STREAM] Failed to reopen part file for header finalize"
+    );
+    audioStreamState = AUDIO_STREAM_IDLE;
+    audioStreamId = "";
+    return;
+  }
+
+  uint8_t headerBuffer[AUDIO_STREAM_WAV_HEADER_SIZE];
+
+  buildAudioStreamWavHeader(
+    headerBuffer,
+    audioStreamSampleRate,
+    audioStreamChannels,
+    audioStreamBitsPerSample,
+    dataSize
+  );
+
+  finalizeFile.seek(0);
+
+  const size_t headerWritten = finalizeFile.write(
+    headerBuffer,
+    AUDIO_STREAM_WAV_HEADER_SIZE
+  );
+
+  finalizeFile.flush();
+  finalizeFile.close();
+
+  audioStreamState = AUDIO_STREAM_IDLE;
+  audioStreamId = "";
+
+  if (headerWritten != AUDIO_STREAM_WAV_HEADER_SIZE) {
+    Serial.println("[AUDIO-STREAM] Failed to rewrite WAV header");
+    SD.remove(AUDIO_STREAM_PART_FILENAME);
+    return;
+  }
+
+  if (SD.exists(AUDIO_STREAM_FINAL_FILENAME)) {
+    SD.remove(AUDIO_STREAM_FINAL_FILENAME);
+  }
+
+  if (!SD.rename(AUDIO_STREAM_PART_FILENAME, AUDIO_STREAM_FINAL_FILENAME)) {
+    Serial.println("[AUDIO-STREAM] Rename to final WAV failed");
+    return;
+  }
+
+  Serial.printf(
+    "[AUDIO-STREAM] Finalized %lu bytes PCM, playing %s\n",
+    static_cast<unsigned long>(dataSize),
+    AUDIO_STREAM_FINAL_FILENAME
+  );
+
+  playSdWav(AUDIO_STREAM_FINAL_FILENAME);
+}
+
+
+/*
+ * 中止当前流（audio_stop，或被新流打断，或写入失败）。
+ *
+ * 停止扬声器、关闭并删除临时文件、重置音频流状态。
+ */
+void abortAudioStream() {
+  if (audioStreamState == AUDIO_STREAM_RECEIVING) {
+    audioStreamFile.close();
+  }
+
+  if (SD.exists(AUDIO_STREAM_PART_FILENAME)) {
+    SD.remove(AUDIO_STREAM_PART_FILENAME);
+  }
+
+  audioStreamState = AUDIO_STREAM_IDLE;
+  audioStreamId = "";
+  audioStreamBytesWritten = 0;
+
+  M5.Speaker.stop();
+
+  Serial.println("[AUDIO-STREAM] Stream aborted, temp file removed");
+}
+
+
+/*
+ * 通过 WebSocket 通知 Render：可以开始发送二进制 PCM 帧了。
+ */
+void sendAudioReadyEvent(const String& streamId) {
+  if (!webSocket.isConnected()) {
+    return;
+  }
+
+  StaticJsonDocument<128> doc;
+
+  doc["type"] = "audio_ready";
+  doc["stream_id"] = streamId;
+
+  String json;
+  serializeJson(doc, json);
+
+  webSocket.sendTXT(json);
+}
+
+
+/*
+ * 通过 WebSocket 确认已写入的累计字节数（用于 Render 端流控）。
+ */
+void sendAudioChunkAckEvent(const String& streamId, uint32_t bytesWritten) {
+  if (!webSocket.isConnected()) {
+    return;
+  }
+
+  StaticJsonDocument<160> doc;
+
+  doc["type"] = "audio_chunk_ack";
+  doc["stream_id"] = streamId;
+  doc["bytes_written"] = bytesWritten;
+
+  String json;
+  serializeJson(doc, json);
+
+  webSocket.sendTXT(json);
+}
+
+
+/*
+ * 通过 WebSocket 通知 Render：当前流已被设备端中止。
+ */
+void sendAudioAbortEvent(const String& streamId, const char* reason) {
+  if (!webSocket.isConnected()) {
+    return;
+  }
+
+  StaticJsonDocument<160> doc;
+
+  doc["type"] = "audio_abort";
+  doc["stream_id"] = streamId;
+  doc["reason"] = reason;
+
+  String json;
+  serializeJson(doc, json);
+
+  webSocket.sendTXT(json);
 }
 
 
@@ -939,7 +1356,6 @@ void updateGesture() {
       return;
 
 
-   
 
 
     case GESTURE_NONE:
@@ -1121,7 +1537,7 @@ sendShakeEvent();
      * 用户摇晃只上报事件，
      * 不自动触发舵机动作。
      */
-   
+
   }
 }
 
@@ -1238,12 +1654,31 @@ void webSocketEvent(
 
     case WStype_DISCONNECTED:
       Serial.println("[WS] Disconnected from Render");
+
+      /*
+       * 连接断开时，正在接收的音频流已不可能收到
+       * audio_end，主动中止并清理临时文件，
+       * 避免下次连接后遗留半成品文件。
+       */
+      if (audioStreamState == AUDIO_STREAM_RECEIVING) {
+        abortAudioStream();
+      }
+
       break;
 
 
     case WStype_ERROR:
       Serial.println("[WS] WebSocket error");
       break;
+
+
+    case WStype_BIN: {
+      /*
+       * 二进制帧只用于流式 PCM 音频数据。
+       */
+      writeAudioStreamChunk(payload, length);
+      break;
+    }
 
 
     case WStype_TEXT: {
@@ -1264,6 +1699,50 @@ void webSocketEvent(
           "[WS] JSON parse failed: %s\n",
           error.c_str()
         );
+        return;
+      }
+
+      /*
+       * 音频流控制消息优先处理，处理完直接返回，
+       * 不与下面的 expression/motion/sound 等
+       * 动作字段混在一起解析。
+       */
+      const char* msgType = doc["type"];
+
+      if (msgType != nullptr && strcmp(msgType, "audio_start") == 0) {
+        const char* streamIdRaw = doc["stream_id"];
+
+        String streamId =
+          streamIdRaw != nullptr ? String(streamIdRaw) : String("");
+
+        const uint32_t sampleRate = doc["sample_rate"] | 16000;
+        const uint16_t channels =
+          static_cast<uint16_t>(doc["channels"] | 1);
+        const uint16_t bitsPerSample =
+          static_cast<uint16_t>(doc["bits_per_sample"] | 16);
+
+        if (beginAudioStream(streamId, sampleRate, channels, bitsPerSample)) {
+          sendAudioReadyEvent(streamId);
+        } else {
+          sendAudioAbortEvent(streamId, "start_failed");
+        }
+
+        return;
+      }
+
+      if (msgType != nullptr && strcmp(msgType, "audio_end") == 0) {
+        const char* streamIdRaw = doc["stream_id"];
+
+        String streamId =
+          streamIdRaw != nullptr ? String(streamIdRaw) : String("");
+
+        finishAudioStream(streamId);
+        return;
+      }
+
+      if (msgType != nullptr && strcmp(msgType, "audio_stop") == 0) {
+        Serial.println("[AUDIO-STREAM] audio_stop received");
+        abortAudioStream();
         return;
       }
 
@@ -1332,7 +1811,7 @@ void webSocketEvent(
         } else if (strcmp(motion, "tilt_up") == 0) {
           startTiltUp();
 
-       
+
 
         } else if (strcmp(motion, "home") == 0) {
           cancelGesture();
@@ -1658,6 +2137,17 @@ void setup() {
         ? "found"
         : "missing"
     );
+
+    /*
+     * 清理上次异常断电/断线可能残留的临时流文件，
+     * 避免占用 SD 空间或被误当成完整音频。
+     */
+    if (SD.exists(AUDIO_STREAM_PART_FILENAME)) {
+      SD.remove(AUDIO_STREAM_PART_FILENAME);
+      Serial.println(
+        "[SD] Removed leftover /audio.wav.part from previous session"
+      );
+    }
   } else {
     Serial.println("[SD] Card mount failed");
   }

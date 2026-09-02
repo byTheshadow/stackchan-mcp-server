@@ -1,41 +1,42 @@
 import express from 'express';
 import cors from 'cors';
-import { WebSocketServer, WebSocket } from 'ws';
+import {
+  WebSocketServer,
+  WebSocket
+} from 'ws';
 import http from 'http';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+
+const {
+  playRobotAudio,
+  stopRobotAudio,
+  attachAudioProtocolHandlers
+} = require('./audioStreamer.cjs');
 
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '64kb' }));
+app.use(
+  express.json({
+    limit: '64kb'
+  })
+);
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server
+});
 
-/*
- * 当前在线的机器人连接。
- *
- * 目前仅支持一台机器人。
- */
 let robotSocket = null;
+const ROBOT_ID = 'default';
 
-
-/*
- * 实体机器人待处理事件队列。
- *
- * - 最多保存 50 条；
- * - 24 小时后过期；
- * - Render 重启后清空；
- * - 处理完成后通过 acknowledge_robot_events 删除。
- */
 const pendingRobotEvents = [];
 
 const MAX_PENDING_EVENTS = 50;
 const EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 
-
-/*
- * 删除过期实体事件。
- */
 function pruneExpiredRobotEvents() {
   const now = Date.now();
 
@@ -45,7 +46,9 @@ function pruneExpiredRobotEvents() {
     index--
   ) {
     const event = pendingRobotEvents[index];
-    const receivedAtMs = Date.parse(event.received_at);
+    const receivedAtMs = Date.parse(
+      event.received_at
+    );
 
     if (
       Number.isNaN(receivedAtMs) ||
@@ -56,20 +59,13 @@ function pruneExpiredRobotEvents() {
   }
 }
 
-
-/*
- * 创建实体事件 ID。
- */
 function makeRobotEventId() {
-  return `evt_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+  return (
+    `evt_${Date.now().toString(36)}_` +
+    Math.random().toString(36).slice(2, 8)
+  );
 }
 
-
-/*
- * 添加机器人实体事件。
- */
 function addRobotEvent(rawEvent) {
   pruneExpiredRobotEvents();
 
@@ -85,41 +81,43 @@ function addRobotEvent(rawEvent) {
 
   pendingRobotEvents.push(event);
 
-  while (pendingRobotEvents.length > MAX_PENDING_EVENTS) {
+  while (
+    pendingRobotEvents.length >
+    MAX_PENDING_EVENTS
+  ) {
     pendingRobotEvents.shift();
   }
 
-  console.log('⬅️ 已记录机器人事件：', event);
+  console.log(
+    '⬅️ 已记录机器人事件：',
+    event
+  );
 
   return event;
 }
 
-
-/*
- * 获取尚未处理的实体事件。
- */
 function getPendingRobotEvents() {
   pruneExpiredRobotEvents();
 
   const now = Date.now();
 
   return pendingRobotEvents.map((event) => {
-    const receivedAtMs = Date.parse(event.received_at);
+    const receivedAtMs = Date.parse(
+      event.received_at
+    );
 
     return {
       ...event,
       seconds_ago: Math.max(
         0,
-        Math.floor((now - receivedAtMs) / 1000)
+        Math.floor(
+          (now - receivedAtMs) / 1000
+        )
       )
     };
   });
 }
 
-
-/*
- * 确认并删除实体事件。
- */
 function acknowledgeRobotEvents(eventIds) {
   pruneExpiredRobotEvents();
 
@@ -131,7 +129,11 @@ function acknowledgeRobotEvents(eventIds) {
     index >= 0;
     index--
   ) {
-    if (idSet.has(pendingRobotEvents[index].id)) {
+    if (
+      idSet.has(
+        pendingRobotEvents[index].id
+      )
+    ) {
       pendingRobotEvents.splice(index, 1);
       acknowledged++;
     }
@@ -140,18 +142,34 @@ function acknowledgeRobotEvents(eventIds) {
   return acknowledged;
 }
 
-
-/*
- * 机器人 WebSocket 连接。
- */
 wss.on('connection', (ws, req) => {
   console.log(
-    `✅ StackChan 机器人已连接：${req.socket.remoteAddress}`
+    `✅ StackChan 机器人已连接：` +
+    `${req.socket.remoteAddress}`
   );
 
   /*
-   * 当前只支持一台机器人。
+   * 目前只支持一台机器人。
+   * 新连接会替换旧连接。
    */
+  if (
+    robotSocket &&
+    robotSocket !== ws &&
+    robotSocket.readyState === WebSocket.OPEN
+  ) {
+    void stopRobotAudio(
+      robotSocket,
+      ROBOT_ID,
+      'replaced_by_new_connection'
+    );
+
+    try {
+      robotSocket.close();
+    } catch {
+      // 忽略关闭异常。
+    }
+  }
+
   robotSocket = ws;
 
   ws.on('message', (message) => {
@@ -171,8 +189,21 @@ wss.on('connection', (ws, req) => {
     }
 
     /*
-     * 屏幕触摸事件。
+     * 音频协议消息不进入实体事件队列。
      */
+    if (
+      data &&
+      typeof data.type === 'string' &&
+      data.type.startsWith('audio_')
+    ) {
+      attachAudioProtocolHandlers(
+        ROBOT_ID,
+        data
+      );
+
+      return;
+    }
+
     const isScreenTouchEvent =
       data &&
       data.type === 'robot_event' &&
@@ -181,21 +212,12 @@ wss.on('connection', (ws, req) => {
       Number.isInteger(data.y) &&
       Number.isFinite(data.at_ms);
 
-    /*
-     * 头顶触摸事件。
-     */
     const isHeadTouchEvent =
       data &&
       data.type === 'robot_event' &&
       data.event === 'head_touch' &&
       Number.isFinite(data.at_ms);
 
-    /*
-     * 用户摇晃事件。
-     *
-     * shake 只表示用户摇晃了机器人，
-     * 不是机器人主动执行的舵机动作。
-     */
     const isShakeEvent =
       data &&
       data.type === 'robot_event' &&
@@ -216,7 +238,15 @@ wss.on('connection', (ws, req) => {
       robotSocket = null;
     }
 
-    console.log('❌ StackChan 机器人已断开');
+    void stopRobotAudio(
+      ws,
+      ROBOT_ID,
+      'robot_disconnected'
+    );
+
+    console.log(
+      '❌ StackChan 机器人已断开'
+    );
   });
 
   ws.on('error', (error) => {
@@ -227,10 +257,6 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-
-/*
- * JSON-RPC 成功响应。
- */
 function jsonRpcSuccess(id, result) {
   return {
     jsonrpc: '2.0',
@@ -239,11 +265,12 @@ function jsonRpcSuccess(id, result) {
   };
 }
 
-
-/*
- * JSON-RPC 错误响应。
- */
-function jsonRpcError(id, code, message, data) {
+function jsonRpcError(
+  id,
+  code,
+  message,
+  data
+) {
   const error = {
     code,
     message
@@ -260,24 +287,19 @@ function jsonRpcError(id, code, message, data) {
   };
 }
 
-
-/*
- * 清理屏幕显示文字。
- */
 function sanitizeDisplayText(value) {
   if (typeof value !== 'string') {
     return '';
   }
 
   return value
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(
+      /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g,
+      ''
+    )
     .slice(0, 80);
 }
 
-
-/*
- * 限制屏幕文字显示时长。
- */
 function normalizeDisplayDuration(value) {
   const defaultDurationMs = 5000;
   const minDurationMs = 1000;
@@ -293,15 +315,11 @@ function normalizeDisplayDuration(value) {
   );
 }
 
-
-/*
- * control_robot 工具定义。
- */
 const controlRobotTool = {
   name: 'control_robot',
 
   description:
-    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证的保守舵机动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。请让实体反馈服务于当前语境，不要为每一句普通对话都播放声音、执行动作或显示文字。当前主动动作支持 nod、shake_head、look_left、look_right、tilt_up、home 和 none。tilt_down 不支持。shake 是用户摇晃实体后由 IMU 上报的事件，不是机器人主动动作，不能通过本工具触发。不支持任意角度、自定义动作序列、跳舞、TTS、录音或自定义灯光命令。',
+    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证的保守舵机动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。当前主动动作支持 nod、shake_head、look_left、look_right、tilt_up、home 和 none。shake 是用户摇晃实体后由 IMU 上报的事件，不是机器人主动动作，不能通过本工具触发。不支持任意角度、自定义动作序列、跳舞、TTS、录音或自定义灯光命令。',
 
   inputSchema: {
     type: 'object',
@@ -309,7 +327,6 @@ const controlRobotTool = {
     properties: {
       expression: {
         type: 'string',
-
         enum: [
           'happy',
           'sad',
@@ -318,14 +335,12 @@ const controlRobotTool = {
           'sleepy',
           'neutral'
         ],
-
         description:
-          '必填。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。happy=开心、友好、庆祝、感谢；sad=难过、遗憾、安慰；angry=不满、严肃、强调；doubt=疑惑、思考、不确定；sleepy=困倦、晚安、休息；neutral=平静、默认或不希望突出情绪。'
+          '必填。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。'
       },
 
       face_effect: {
         type: 'string',
-
         enum: [
           'none',
           'heart_eyes',
@@ -343,14 +358,12 @@ const controlRobotTool = {
           'relieved_face',
           'determined_face'
         ],
-
         description:
-          '可选的强化脸部效果。none=原生眼睛、嘴巴和眉毛；heart_eyes=喜爱、感动；sparkle_eyes=期待、赞叹；dizzy_eyes=眩晕、信息过载；tear_eyes=难过、感动落泪；surprised_face=明显惊讶；pout_face=轻微不满、撒娇；shy_face=害羞；smug_face=得意、俏皮；confused_face=困惑；laugh_face=大笑；kiss_face=飞吻、亲昵回应；nervous_face=紧张、尴尬；relieved_face=安心；determined_face=认真、下定决心。'
+          '可选的强化脸部效果。'
       },
 
       motion: {
         type: 'string',
-
         enum: [
           'nod',
           'shake_head',
@@ -360,46 +373,40 @@ const controlRobotTool = {
           'home',
           'none'
         ],
-
         description:
-          '可选的一次性舵机动作。nod=点头一次；shake_head=小幅左右摇头；look_left/look_right=小幅向左或向右看；tilt_up=小幅抬头；home=立即回到正中；none=不执行动作。动作会产生机械运动和声音，不要在每句话或短时间内重复触发。当前动作均为保守测试动作，不支持 tilt_down、任意角度或自定义动作序列。'
+          '可选的一次性舵机动作。'
       },
 
       text_to_display: {
         type: 'string',
         maxLength: 80,
-
         description:
-          '可选。显示在实体屏幕上的极简短文字或 ASCII 颜文字，最多 80 个字符。传入空字符串会清除当前文字。'
+          '可选。显示在实体屏幕上的文字，最多 80 个字符。'
       },
 
       display_duration_ms: {
         type: 'integer',
         minimum: 1000,
         maximum: 10000,
-
         description:
-          '可选。text_to_display 的显示时长，单位毫秒；范围 1000～10000，默认 5000。'
+          '屏幕文字的显示时长，单位为毫秒。'
       },
 
       text_to_speak: {
         type: 'string',
-
         description:
-          '为未来 TTS 预留。目前机器人没有接入 TTS，此字段会被安全忽略。'
+          '为未来 TTS 预留，目前会被安全忽略。'
       },
 
       sound: {
         type: 'string',
-
         enum: [
           'none',
           'message',
           'emotion'
         ],
-
         description:
-          '可选。播放 SD 卡中已验证的短 WAV 提示音。message=重要消息或需要吸引注意；emotion=明显情绪回应、庆祝或安慰；none=不播放。'
+          '播放 SD 卡中已验证的短 WAV 提示音。'
       }
     },
 
@@ -409,15 +416,11 @@ const controlRobotTool = {
   }
 };
 
-
-/*
- * get_robot_events 工具定义。
- */
 const getRobotEventsTool = {
   name: 'get_robot_events',
 
   description:
-    '读取 StackChan 实体身体尚未处理的近期互动事件。当前支持 touch_tap（用户触摸屏幕）、head_touch（用户摸头顶）和 shake（用户摇晃实体机器人）。head_touch 在实体端会执行粉色柔和双闪；shake 只表示 IMU 检测到用户摇晃，不会自动触发舵机动作。读取不会删除事件；角色结合语境处理后，应调用 acknowledge_robot_events 确认，避免重复提及。',
+    '读取 StackChan 实体身体尚未处理的近期互动事件。当前支持 touch_tap、head_touch 和 shake。读取不会删除事件；处理完成后应调用 acknowledge_robot_events 确认。',
 
   inputSchema: {
     type: 'object',
@@ -425,15 +428,11 @@ const getRobotEventsTool = {
   }
 };
 
-
-/*
- * acknowledge_robot_events 工具定义。
- */
 const acknowledgeRobotEventsTool = {
   name: 'acknowledge_robot_events',
 
   description:
-    '确认角色已处理的 StackChan 实体事件。确认后事件会从待处理队列删除，不会再由 get_robot_events 返回。',
+    '确认角色已处理的 StackChan 实体事件。确认后事件会从待处理队列删除。',
 
   inputSchema: {
     type: 'object',
@@ -441,16 +440,13 @@ const acknowledgeRobotEventsTool = {
     properties: {
       event_ids: {
         type: 'array',
-
         items: {
           type: 'string'
         },
-
         minItems: 1,
         maxItems: 50,
-
         description:
-          '要确认并删除的事件 ID 列表；ID 来自 get_robot_events。'
+          '要确认并删除的事件 ID 列表。'
       }
     },
 
@@ -460,10 +456,42 @@ const acknowledgeRobotEventsTool = {
   }
 };
 
+const playRobotAudioTool = {
+  name: 'play_robot_audio',
 
-/*
- * 标准化机器人控制参数。
- */
+  description:
+    '播放指定 HTTP 或 HTTPS 音频 URL。服务端会自动使用 ffmpeg 转换为 16kHz、单声道、16-bit PCM，并通过 WebSocket 流式发送给 StackChan。新的播放请求会自动打断当前音频。',
+
+  inputSchema: {
+    type: 'object',
+
+    properties: {
+      audio_url: {
+        type: 'string',
+        format: 'uri',
+        description:
+          '服务端可以访问的 HTTP 或 HTTPS 音频地址。'
+      }
+    },
+
+    required: [
+      'audio_url'
+    ]
+  }
+};
+
+const stopRobotAudioTool = {
+  name: 'stop_robot_audio',
+
+  description:
+    '立即停止 StackChan 当前正在接收或播放的网络音频。',
+
+  inputSchema: {
+    type: 'object',
+    properties: {}
+  }
+};
+
 function normalizeRobotArguments(args = {}) {
   const allowedExpressions = [
     'happy',
@@ -492,10 +520,6 @@ function normalizeRobotArguments(args = {}) {
     'determined_face'
   ];
 
-  /*
-   * 注意：这里没有 tilt_down，
-   * 也没有 shake。
-   */
   const allowedMotions = [
     'nod',
     'shake_head',
@@ -513,31 +537,38 @@ function normalizeRobotArguments(args = {}) {
   ];
 
   const normalized = {
-    expression: allowedExpressions.includes(args.expression)
+    expression: allowedExpressions.includes(
+      args.expression
+    )
       ? args.expression
       : 'neutral',
 
-    face_effect: allowedFaceEffects.includes(args.face_effect)
+    face_effect: allowedFaceEffects.includes(
+      args.face_effect
+    )
       ? args.face_effect
       : 'none',
 
-    motion: allowedMotions.includes(args.motion)
+    motion: allowedMotions.includes(
+      args.motion
+    )
       ? args.motion
       : 'none',
 
-    sound: allowedSounds.includes(args.sound)
+    sound: allowedSounds.includes(
+      args.sound
+    )
       ? args.sound
       : 'none'
   };
 
-  /*
-   * 只有明确传入文字时才发送 text_to_display，
-   * 避免旧调用清除当前文字。
-   */
-  if (typeof args.text_to_display === 'string') {
-    normalized.text_to_display = sanitizeDisplayText(
-      args.text_to_display
-    );
+  if (
+    typeof args.text_to_display === 'string'
+  ) {
+    normalized.text_to_display =
+      sanitizeDisplayText(
+        args.text_to_display
+      );
 
     normalized.display_duration_ms =
       normalizeDisplayDuration(
@@ -548,10 +579,6 @@ function normalizeRobotArguments(args = {}) {
   return normalized;
 }
 
-
-/*
- * 向机器人发送控制指令。
- */
 function sendRobotControl(args = {}) {
   const payload = {
     action: 'speak',
@@ -570,9 +597,14 @@ function sendRobotControl(args = {}) {
     };
   }
 
-  robotSocket.send(JSON.stringify(payload));
+  robotSocket.send(
+    JSON.stringify(payload)
+  );
 
-  console.log('➡️ 已发送至机器人：', payload);
+  console.log(
+    '➡️ 已发送至机器人：',
+    payload
+  );
 
   return {
     ok: true,
@@ -580,10 +612,6 @@ function sendRobotControl(args = {}) {
   };
 }
 
-
-/*
- * 格式化实体事件。
- */
 function formatRobotEventsText(events) {
   if (events.length === 0) {
     return '没有尚未处理的实体事件。';
@@ -591,28 +619,82 @@ function formatRobotEventsText(events) {
 
   const lines = events.map((event) => {
     if (event.event === 'touch_tap') {
-      return `- 用户在 ${event.seconds_ago} 秒前触摸了 StackChan 屏幕一次（事件 ID：${event.id}）。`;
+      return (
+        `- 用户在 ${event.seconds_ago} 秒前` +
+        `触摸了 StackChan 屏幕一次` +
+        `（事件 ID：${event.id}）。`
+      );
     }
 
     if (event.event === 'head_touch') {
-      return `- 用户在 ${event.seconds_ago} 秒前摸了 StackChan 的头顶一次（事件 ID：${event.id}）。`;
+      return (
+        `- 用户在 ${event.seconds_ago} 秒前` +
+        `摸了 StackChan 的头顶一次` +
+        `（事件 ID：${event.id}）。`
+      );
     }
 
     if (event.event === 'shake') {
-      return `- 用户在 ${event.seconds_ago} 秒前摇晃了 StackChan 一次（事件 ID：${event.id}）。`;
+      return (
+        `- 用户在 ${event.seconds_ago} 秒前` +
+        `摇晃了 StackChan 一次` +
+        `（事件 ID：${event.id}）。`
+      );
     }
 
-    return `- 未知实体事件：${event.event}（事件 ID：${event.id}）。`;
+    return (
+      `- 未知实体事件：${event.event}` +
+      `（事件 ID：${event.id}）。`
+    );
   });
 
-  return `尚未处理的实体事件：\n${lines.join('\n')}`;
+  return (
+    '尚未处理的实体事件：\n' +
+    lines.join('\n')
+  );
 }
 
+function isValidHttpUrl(value) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 2048
+  ) {
+    return false;
+  }
 
-/*
- * MCP Streamable HTTP 入口。
- */
-app.post('/mcp', (req, res) => {
+  try {
+    const parsed = new URL(value);
+
+    return (
+      parsed.protocol === 'http:' ||
+      parsed.protocol === 'https:'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function robotOfflineResult(id) {
+  return resJsonRpcToolError(
+    id,
+    '机器人离线，无法执行音频操作。'
+  );
+}
+
+function resJsonRpcToolError(id, text) {
+  return jsonRpcSuccess(id, {
+    content: [
+      {
+        type: 'text',
+        text
+      }
+    ],
+    isError: true
+  });
+}
+
+app.post('/mcp', async (req, res) => {
   const request = req.body;
 
   if (
@@ -620,13 +702,15 @@ app.post('/mcp', (req, res) => {
     request.jsonrpc !== '2.0' ||
     typeof request.method !== 'string'
   ) {
-    return res.status(400).json(
-      jsonRpcError(
-        null,
-        -32600,
-        'Invalid JSON-RPC request'
-      )
-    );
+    return res
+      .status(400)
+      .json(
+        jsonRpcError(
+          null,
+          -32600,
+          'Invalid JSON-RPC request'
+        )
+      );
   }
 
   const {
@@ -635,7 +719,9 @@ app.post('/mcp', (req, res) => {
     params = {}
   } = request;
 
-  console.log(`MCP request: ${method}`);
+  console.log(
+    `MCP request: ${method}`
+  );
 
   const isNotification =
     id === undefined ||
@@ -644,7 +730,8 @@ app.post('/mcp', (req, res) => {
   if (method === 'initialize') {
     const result = {
       protocolVersion:
-        params.protocolVersion || '2025-03-26',
+        params.protocolVersion ||
+        '2025-03-26',
 
       capabilities: {
         tools: {}
@@ -652,11 +739,11 @@ app.post('/mcp', (req, res) => {
 
       serverInfo: {
         name: 'stackchan-robot-relay',
-        version: '1.5.0'
+        version: '1.6.0'
       },
 
       instructions:
-        '此服务负责 StackChan 实体身体的上下行中继。当前可控制基础表情、脸部效果、短屏幕文字、nod、shake_head、look_left、look_right、tilt_up、home 和两种短提示音；也可读取并确认 touch_tap、head_touch、shake 实体事件。shake 表示用户摇晃机器人后由 IMU 上报，并非机器人主动舵机动作。tilt_down 不支持。用户摇晃时，固件会暂时显示 dizzy_eyes，约 2.2 秒后恢复摇晃前的脸部效果。'
+        '此服务负责 StackChan 实体身体的上下行中继。支持基础表情、脸部效果、短屏幕文字、保守舵机动作、短提示音、网络音频播放和网络音频停止；也可读取并确认 touch_tap、head_touch、shake 实体事件。网络音频使用 play_robot_audio 播放，使用 stop_robot_audio 停止。shake 表示用户摇晃机器人后由 IMU 上报，并非机器人主动舵机动作。tilt_down 不支持。'
     };
 
     return res
@@ -667,7 +754,9 @@ app.post('/mcp', (req, res) => {
       );
   }
 
-  if (method === 'notifications/initialized') {
+  if (
+    method === 'notifications/initialized'
+  ) {
     return res
       .status(202)
       .end();
@@ -682,17 +771,125 @@ app.post('/mcp', (req, res) => {
           tools: [
             controlRobotTool,
             getRobotEventsTool,
-            acknowledgeRobotEventsTool
+            acknowledgeRobotEventsTool,
+            playRobotAudioTool,
+            stopRobotAudioTool
           ]
         })
       );
   }
 
   if (method === 'tools/call') {
-    if (params.name === 'control_robot') {
-      const result = sendRobotControl(
-        params.arguments ?? {}
-      );
+    const toolName = params.name;
+    const args = params.arguments ?? {};
+
+    if (
+      toolName === 'play_robot_audio' ||
+      toolName === 'stop_robot_audio'
+    ) {
+      if (
+        !robotSocket ||
+        robotSocket.readyState !== WebSocket.OPEN
+      ) {
+        return res
+          .status(200)
+          .type('application/json')
+          .json(
+            resJsonRpcToolError(
+              id,
+              '机器人离线，无法执行音频操作。'
+            )
+          );
+      }
+
+      if (toolName === 'play_robot_audio') {
+        const audioUrl = args.audio_url;
+
+        if (!isValidHttpUrl(audioUrl)) {
+          return res
+            .status(200)
+            .type('application/json')
+            .json(
+              resJsonRpcToolError(
+                id,
+                'audio_url 必须是有效的 HTTP 或 HTTPS URL。'
+              )
+            );
+        }
+
+        try {
+          await playRobotAudio(
+            robotSocket,
+            ROBOT_ID,
+            audioUrl
+          );
+
+          return res
+            .status(200)
+            .type('application/json')
+            .json(
+              jsonRpcSuccess(id, {
+                content: [
+                  {
+                    type: 'text',
+                    text: '音频已发送完成。'
+                  }
+                ]
+              })
+            );
+        } catch (error) {
+          console.error(
+            '播放机器人音频失败：',
+            error
+          );
+
+          return res
+            .status(200)
+            .type('application/json')
+            .json(
+              resJsonRpcToolError(
+                id,
+                `音频播放失败：${error.message}`
+              )
+            );
+        }
+      }
+
+      try {
+        await stopRobotAudio(
+          robotSocket,
+          ROBOT_ID,
+          'stopped_by_tool_call'
+        );
+
+        return res
+          .status(200)
+          .type('application/json')
+          .json(
+            jsonRpcSuccess(id, {
+              content: [
+                {
+                  type: 'text',
+                  text: '已停止机器人音频。'
+                }
+              ]
+            })
+          );
+      } catch (error) {
+        return res
+          .status(200)
+          .type('application/json')
+          .json(
+            resJsonRpcToolError(
+              id,
+              `停止音频失败：${error.message}`
+            )
+          );
+      }
+    }
+
+    if (toolName === 'control_robot') {
+      const result = sendRobotControl(args);
 
       if (!result.ok) {
         return res
@@ -703,7 +900,8 @@ app.post('/mcp', (req, res) => {
               content: [
                 {
                   type: 'text',
-                  text: `机器人离线：${result.error}`
+                  text:
+                    `机器人离线：${result.error}`
                 }
               ],
               isError: true
@@ -732,7 +930,6 @@ app.post('/mcp', (req, res) => {
             content: [
               {
                 type: 'text',
-
                 text:
                   '机器人已收到指令：' +
                   `表情=${expression}，` +
@@ -746,7 +943,7 @@ app.post('/mcp', (req, res) => {
         );
     }
 
-    if (params.name === 'get_robot_events') {
+    if (toolName === 'get_robot_events') {
       const events = getPendingRobotEvents();
 
       return res
@@ -757,10 +954,11 @@ app.post('/mcp', (req, res) => {
             content: [
               {
                 type: 'text',
-                text: formatRobotEventsText(events)
+                text: formatRobotEventsText(
+                  events
+                )
               }
             ],
-
             structuredContent: {
               events
             }
@@ -768,9 +966,11 @@ app.post('/mcp', (req, res) => {
         );
     }
 
-    if (params.name === 'acknowledge_robot_events') {
+    if (
+      toolName === 'acknowledge_robot_events'
+    ) {
       const eventIds =
-        params.arguments?.event_ids;
+        args.event_ids;
 
       if (
         !Array.isArray(eventIds) ||
@@ -808,10 +1008,10 @@ app.post('/mcp', (req, res) => {
             content: [
               {
                 type: 'text',
-                text: `已确认 ${acknowledged} 条实体事件。`
+                text:
+                  `已确认 ${acknowledged} 条实体事件。`
               }
             ],
-
             structuredContent: {
               acknowledged
             }
@@ -826,7 +1026,7 @@ app.post('/mcp', (req, res) => {
         jsonRpcError(
           id,
           -32601,
-          `Unknown tool: ${params.name || '(missing)'}`
+          `Unknown tool: ${toolName || '(missing)'}`
         )
       );
   }
@@ -849,10 +1049,6 @@ app.post('/mcp', (req, res) => {
     );
 });
 
-
-/*
- * GET /mcp 不支持。
- */
 app.get('/mcp', (req, res) => {
   res
     .status(405)
@@ -863,46 +1059,122 @@ app.get('/mcp', (req, res) => {
     );
 });
 
-
-/*
- * 健康检查。
- */
 app.get('/', (req, res) => {
   res
     .type('text')
-    .send('StackChan relay server is running.');
+    .send(
+      'StackChan relay server is running.'
+    );
 });
 
-
-/*
- * 旧版工具说明接口。
- */
 app.get('/mcp/tools', (req, res) => {
   res.json({
     tools: [
       controlRobotTool,
       getRobotEventsTool,
-      acknowledgeRobotEventsTool
+      acknowledgeRobotEventsTool,
+      playRobotAudioTool,
+      stopRobotAudioTool
     ]
   });
 });
 
-
-/*
- * 旧版控制接口。
- */
-app.post('/mcp/call', (req, res) => {
+app.post('/mcp/call', async (req, res) => {
   const {
     tool,
     arguments: args = {}
   } = req.body ?? {};
 
-  if (tool !== 'control_robot') {
+  if (
+    tool !== 'control_robot' &&
+    tool !== 'play_robot_audio' &&
+    tool !== 'stop_robot_audio'
+  ) {
     return res
       .status(404)
       .json({
         error: 'Tool not found'
       });
+  }
+
+  if (tool === 'play_robot_audio') {
+    if (
+      !robotSocket ||
+      robotSocket.readyState !== WebSocket.OPEN
+    ) {
+      return res
+        .status(503)
+        .json({
+          error:
+            'Robot is offline. Please check Wi-Fi and WebSocket connection.'
+        });
+    }
+
+    if (!isValidHttpUrl(args.audio_url)) {
+      return res
+        .status(400)
+        .json({
+          error:
+            'audio_url must be a valid HTTP or HTTPS URL'
+        });
+    }
+
+    try {
+      await playRobotAudio(
+        robotSocket,
+        ROBOT_ID,
+        args.audio_url
+      );
+
+      return res.json({
+        content: [
+          {
+            type: 'text',
+            text: '音频已发送完成。'
+          }
+        ]
+      });
+    } catch (error) {
+      console.error(
+        '旧版接口播放音频失败：',
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          error: error.message
+        });
+    }
+  }
+
+  if (tool === 'stop_robot_audio') {
+    if (
+      !robotSocket ||
+      robotSocket.readyState !== WebSocket.OPEN
+    ) {
+      return res
+        .status(503)
+        .json({
+          error:
+            'Robot is offline. Please check Wi-Fi and WebSocket connection.'
+        });
+    }
+
+    await stopRobotAudio(
+      robotSocket,
+      ROBOT_ID,
+      'stopped_by_legacy_tool_call'
+    );
+
+    return res.json({
+      content: [
+        {
+          type: 'text',
+          text: '已停止机器人音频。'
+        }
+      ]
+    });
   }
 
   const result = sendRobotControl(args);
@@ -932,7 +1204,6 @@ app.post('/mcp/call', (req, res) => {
     content: [
       {
         type: 'text',
-
         text:
           `已发送机器人指令：expression=${expression}, ` +
           `face_effect=${faceEffect}, ` +
@@ -944,16 +1215,11 @@ app.post('/mcp/call', (req, res) => {
   });
 });
 
-
-/*
- * 调试用实体事件接口。
- */
 app.get('/robot/events', (req, res) => {
   res.json({
     events: getPendingRobotEvents()
   });
 });
-
 
 app.post('/robot/events/ack', (req, res) => {
   const eventIds = req.body?.event_ids;
@@ -967,7 +1233,8 @@ app.post('/robot/events/ack', (req, res) => {
     return res
       .status(400)
       .json({
-        error: 'event_ids must be an array of strings'
+        error:
+          'event_ids must be an array of strings'
       });
   }
 
@@ -979,9 +1246,10 @@ app.post('/robot/events/ack', (req, res) => {
   });
 });
 
-
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(
+    `Server is running on port ${PORT}`
+  );
 });
