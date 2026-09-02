@@ -781,61 +781,7 @@ void writeLe32(
 }
 
 
-/*
- * ============================================================
- * 网络音频 WAV 文件
- * ============================================================
- */
 
-bool writeNetworkAudioWavHeader(
-  File& file,
-  uint32_t pcmBytes
-) {
-  if (pcmBytes > NETWORK_AUDIO_MAX_BYTES) {
-    return false;
-  }
-
-  uint8_t header[44] = {};
-
-  memcpy(header + 0, "RIFF", 4);
-
-  writeLe32(
-    header,
-    4,
-    36 + pcmBytes
-  );
-
-  memcpy(header + 8, "WAVE", 4);
-  memcpy(header + 12, "fmt ", 4);
-
-  writeLe32(header, 16, 16);
-  writeLe16(header, 20, 1);
-  writeLe16(header, 22, 1);
-  writeLe32(header, 24, 16000);
-  writeLe32(header, 28, 32000);
-  writeLe16(header, 32, 2);
-  writeLe16(header, 34, 16);
-
-  memcpy(header + 36, "data", 4);
-
-  writeLe32(
-    header,
-    40,
-    pcmBytes
-  );
-
-  if (!file.seek(0)) {
-    return false;
-  }
-
-  const size_t written =
-    file.write(
-      header,
-      sizeof(header)
-    );
-
-  return written == sizeof(header);
-}
 
 
 /*
