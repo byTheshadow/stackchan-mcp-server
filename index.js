@@ -26,8 +26,10 @@ app.use(
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({
-  server
+  server,
+  perMessageDeflate: false
 });
+
 
 let robotSocket = null;
 const ROBOT_ID = 'default';

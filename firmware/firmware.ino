@@ -1731,6 +1731,13 @@ void webSocketEvent(
   uint8_t* payload,
   size_t length
 ) {
+
+  Serial.printf(
+  "[WS] Event type=%d, length=%u\n",
+  static_cast<int>(type),
+  static_cast<unsigned>(length)
+);
+
   switch (type) {
     case WStype_CONNECTED:
       Serial.println("[WS] Connected to Render");
@@ -1760,22 +1767,65 @@ void webSocketEvent(
       Serial.println("[WS] WebSocket error");
       break;
 
-case WStype_BIN: {
-  Serial.printf(
-    "[WS] Binary frame received: %u bytes\n",
-    static_cast<unsigned>(length)
-  );
+    case WStype_BIN: {
+      Serial.printf(
+        "[WS] Binary frame received: %u bytes\n",
+        static_cast<unsigned>(length)
+      );
 
-  /*
-   * 二进制帧只用于流式 PCM 音频数据。
-   */
-  writeAudioStreamChunk(
-    payload,
-    length
-  );
+      writeAudioStreamChunk(
+        payload,
+        length
+      );
 
-  break;
-}
+      break;
+    }
+
+
+    case WStype_FRAGMENT_BIN_START: {
+      Serial.printf(
+        "[WS] Binary fragment start: %u bytes\n",
+        static_cast<unsigned>(length)
+      );
+
+      writeAudioStreamChunk(
+        payload,
+        length
+      );
+
+      break;
+    }
+
+
+    case WStype_FRAGMENT: {
+      Serial.printf(
+        "[WS] Binary fragment: %u bytes\n",
+        static_cast<unsigned>(length)
+      );
+
+      writeAudioStreamChunk(
+        payload,
+        length
+      );
+
+      break;
+    }
+
+
+    case WStype_FRAGMENT_FIN: {
+      Serial.printf(
+        "[WS] Binary fragment finish: %u bytes\n",
+        static_cast<unsigned>(length)
+      );
+
+      writeAudioStreamChunk(
+        payload,
+        length
+      );
+
+      break;
+    }
+
 
 
 

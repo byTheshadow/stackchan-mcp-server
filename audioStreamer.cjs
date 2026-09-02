@@ -476,8 +476,10 @@ async function playRobotAudioInner(
       );
 
       robotSocket.send(chunk, {
-  binary: true
+  binary: true,
+  compress: false
 });
+
 
       bytesSent += chunk.length;
 
