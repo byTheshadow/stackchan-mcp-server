@@ -659,8 +659,10 @@ bool beginAudioStream(
 /*
  * 接收一帧二进制 PCM 数据并追加写入临时文件。
  */
-
- void writeAudioStreamChunk(
+/*
+ * 接收一帧二进制 PCM 数据并追加写入临时文件。
+ */
+void writeAudioStreamChunk(
   const uint8_t* data,
   size_t length
 ) {
@@ -669,22 +671,26 @@ bool beginAudioStream(
     static_cast<unsigned>(length)
   );
 
-  if (
-    audioStreamState != AUDIO_STREAM_RECEIVING
-  ) {
-    Serial.println(
-      "[AUDIO-STREAM] Binary frame ignored: "
-      "no active stream"
-    );
-    return;
-  }
-
+  /*
+   * WStype_FRAGMENT_FIN 有时会传入 length=0。
+   * 它只是分片结束通知，不是音频数据。
+   */
   if (
     data == nullptr ||
     length == 0
   ) {
     Serial.println(
       "[AUDIO-STREAM] Empty binary frame ignored"
+    );
+    return;
+  }
+
+  if (
+    audioStreamState != AUDIO_STREAM_RECEIVING
+  ) {
+    Serial.println(
+      "[AUDIO-STREAM] Binary frame ignored: "
+      "no active stream"
     );
     return;
   }
@@ -730,23 +736,156 @@ bool beginAudioStream(
     static_cast<uint32_t>(written);
 
   /*
-   * 发送累计写入字节数。
+   * bytes_written 返回本次数据块写入的字节数。
+   * Render 当前只使用 ACK 作为流控信号。
    */
-sendAudioChunkAckEvent(
-  audioStreamId,
-  static_cast<uint32_t>(written)
-);
+  sendAudioChunkAckEvent(
+    audioStreamId,
+    static_cast<uint32_t>(written)
+  );
 
- 
- Serial.printf(
-  "[AUDIO-STREAM] Chunk ACK sent: "
-  "stream_id=%s, chunk=%u, total=%lu\n",
-  audioStreamId.c_str(),
-  static_cast<unsigned>(written),
-  static_cast<unsigned long>(
-    audioStreamBytesWritten
-  )
-);
+  Serial.printf(
+    "[AUDIO-STREAM] Chunk ACK sent: "
+    "stream_id=%s, chunk=%u, total=%lu\n",
+    audioStreamId.c_str(),
+    static_cast<unsigned>(written),
+    static_cast<unsigned long>(
+      audioStreamBytesWritten
+    )
+  );
+}
+
+
+/*
+ * 结束当前流：回写正确的 WAV 头，
+ * 重命名为最终文件，并复用 playSdWav() 播放。
+ */
+void finishAudioStream(
+  const String& streamId
+) {
+  if (
+    audioStreamState != AUDIO_STREAM_RECEIVING
+  ) {
+    Serial.println(
+      "[AUDIO-STREAM] audio_end ignored: "
+      "no active stream"
+    );
+    return;
+  }
+
+  if (
+    streamId.length() > 0 &&
+    streamId != audioStreamId
+  ) {
+    Serial.printf(
+      "[AUDIO-STREAM] audio_end stream_id "
+      "mismatch: expected=%s got=%s\n",
+      audioStreamId.c_str(),
+      streamId.c_str()
+    );
+    return;
+  }
+
+  audioStreamFile.flush();
+  audioStreamFile.close();
+
+  const uint32_t dataSize =
+    audioStreamBytesWritten;
+
+  File finalizeFile =
+    SD.open(
+      AUDIO_STREAM_PART_FILENAME,
+      "r+"
+    );
+
+  if (!finalizeFile) {
+    Serial.println(
+      "[AUDIO-STREAM] Failed to reopen part "
+      "file for header finalize"
+    );
+
+    audioStreamState =
+      AUDIO_STREAM_IDLE;
+
+    audioStreamId = "";
+
+    return;
+  }
+
+  uint8_t headerBuffer[
+    AUDIO_STREAM_WAV_HEADER_SIZE
+  ];
+
+  buildAudioStreamWavHeader(
+    headerBuffer,
+    audioStreamSampleRate,
+    audioStreamChannels,
+    audioStreamBitsPerSample,
+    dataSize
+  );
+
+  finalizeFile.seek(0);
+
+  const size_t headerWritten =
+    finalizeFile.write(
+      headerBuffer,
+      AUDIO_STREAM_WAV_HEADER_SIZE
+    );
+
+  finalizeFile.flush();
+  finalizeFile.close();
+
+  audioStreamState =
+    AUDIO_STREAM_IDLE;
+
+  audioStreamId = "";
+
+  if (
+    headerWritten !=
+    AUDIO_STREAM_WAV_HEADER_SIZE
+  ) {
+    Serial.println(
+      "[AUDIO-STREAM] Failed to rewrite WAV header"
+    );
+
+    SD.remove(
+      AUDIO_STREAM_PART_FILENAME
+    );
+
+    return;
+  }
+
+  if (
+    SD.exists(AUDIO_STREAM_FINAL_FILENAME)
+  ) {
+    SD.remove(
+      AUDIO_STREAM_FINAL_FILENAME
+    );
+  }
+
+  if (
+    !SD.rename(
+      AUDIO_STREAM_PART_FILENAME,
+      AUDIO_STREAM_FINAL_FILENAME
+    )
+  ) {
+    Serial.println(
+      "[AUDIO-STREAM] Rename to final WAV failed"
+    );
+    return;
+  }
+
+  Serial.printf(
+    "[AUDIO-STREAM] Finalized %lu bytes PCM, "
+    "playing %s\n",
+    static_cast<unsigned long>(dataSize),
+    AUDIO_STREAM_FINAL_FILENAME
+  );
+
+  playSdWav(
+    AUDIO_STREAM_FINAL_FILENAME
+  );
+}
 
 
 
