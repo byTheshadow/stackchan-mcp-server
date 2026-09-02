@@ -389,6 +389,37 @@ void handleAudioStop(JsonDocument& doc);
 void handleAudioAbort(JsonDocument& doc);
 
 void resetNetworkAudioState(bool removeFiles);
+
+void sendAudioStatus(
+  const char* type,
+  const char* streamId,
+  const char* error = nullptr
+);
+
+void writeLe16(
+  uint8_t* buffer,
+  size_t offset,
+  uint16_t value
+);
+
+void writeLe32(
+  uint8_t* buffer,
+  size_t offset,
+  uint32_t value
+);
+
+bool writeNetworkAudioWavHeader(
+  File& file,
+  uint32_t pcmBytes
+);
+
+
+/*
+ * ============================================================
+ * 网络音频 WAV 头
+ * ============================================================
+ */
+
 bool writeNetworkAudioWavHeader(
   File& file,
   uint32_t pcmBytes
@@ -781,9 +812,6 @@ void writeLe32(
 }
 
 
-
-
-
 /*
  * ============================================================
  * 音频状态发送
@@ -827,7 +855,7 @@ void sendAudioStatus(
  * ============================================================
  */
 
- void resetNetworkAudioState(
+void resetNetworkAudioState(
   bool removeFiles
 ) {
   if (networkAudioFile) {
@@ -856,12 +884,12 @@ void sendAudioStatus(
 }
 
 
-
 /*
  * ============================================================
  * 收到 audio_start
  * ============================================================
  */
+
 void handleAudioStart(
   JsonDocument& doc
 ) {
@@ -914,7 +942,8 @@ void handleAudioStart(
   resetNetworkAudioState(true);
 
   /*
-   * 防止旧的 .part 文件被 FILE_WRITE 以追加方式继续写入。
+   * 防止旧的 .part 文件被 FILE_WRITE
+   * 以追加方式继续写入。
    */
   if (SD.exists(NETWORK_AUDIO_PART_PATH)) {
     SD.remove(NETWORK_AUDIO_PART_PATH);
@@ -960,17 +989,11 @@ void handleAudioStart(
     return;
   }
 
-  if (!networkAudioFile.flush()) {
-    resetNetworkAudioState(true);
-
-    sendAudioStatus(
-      "audio_error",
-      streamId,
-      "Cannot flush WAV placeholder"
-    );
-
-    return;
-  }
+  /*
+   * File::flush() 在当前 Arduino SD 库中返回 void，
+   * 不能将其作为 bool 判断。
+   */
+  networkAudioFile.flush();
 
   networkAudioStreamId = streamId;
   networkAudioPcmBytes = 0;
@@ -985,7 +1008,8 @@ void handleAudioStart(
   );
 
   /*
-   * 只有发送 audio_ready 后，Render 端才允许发送 PCM。
+   * 只有发送 audio_ready 后，
+   * Render 端才允许发送 PCM。
    */
   sendAudioStatus(
     "audio_ready",
@@ -994,12 +1018,12 @@ void handleAudioStart(
 }
 
 
-
 /*
  * ============================================================
  * 收到网络音频二进制帧
  * ============================================================
  */
+
 void handleWebSocketBinary(
   uint8_t* payload,
   size_t length
@@ -1049,7 +1073,8 @@ void handleWebSocketBinary(
   }
 
   /*
-   * 使用减法判断，避免 networkAudioPcmBytes + length
+   * 使用减法判断，避免
+   * networkAudioPcmBytes + length
    * 在边界情况下发生整数溢出。
    */
   if (
@@ -1075,8 +1100,10 @@ void handleWebSocketBinary(
 
   /*
    * PCM 为 16-bit little-endian。
-   * 单个 WebSocket 帧可以是奇数长度，因为一个 sample
-   * 可能跨越两个 WebSocket 帧。
+   *
+   * 单个 WebSocket 帧可以是奇数长度，
+   * 因为一个 sample 可能跨越两个 WebSocket 帧。
+   *
    * 因此这里只在 audio_end 时检查总长度是否为偶数。
    */
   const size_t written =
@@ -1119,20 +1146,11 @@ void handleWebSocketBinary(
     lastNetworkAudioFlushBytes >=
     NETWORK_AUDIO_FLUSH_INTERVAL_BYTES
   ) {
-    if (!networkAudioFile.flush()) {
-      const String streamId =
-        networkAudioStreamId;
-
-      resetNetworkAudioState(true);
-
-      sendAudioStatus(
-        "audio_error",
-        streamId.c_str(),
-        "SD flush failed"
-      );
-
-      return;
-    }
+    /*
+     * File::flush() 返回 void，
+     * 不能判断其返回值。
+     */
+    networkAudioFile.flush();
 
     lastNetworkAudioFlushBytes =
       networkAudioPcmBytes;
@@ -1140,12 +1158,12 @@ void handleWebSocketBinary(
 }
 
 
-
 /*
  * ============================================================
  * 收到 audio_end
  * ============================================================
  */
+
 void handleAudioEnd(
   JsonDocument& doc
 ) {
@@ -1205,21 +1223,10 @@ void handleAudioEnd(
     return;
   }
 
-  if (!networkAudioFile.flush()) {
-    const String currentStreamId =
-      networkAudioStreamId;
-
-    resetNetworkAudioState(true);
-
-    sendAudioStatus(
-      "audio_error",
-      currentStreamId.c_str(),
-      "SD flush failed"
-    );
-
-    return;
-  }
-
+  /*
+   * File::flush() 返回 void。
+   */
+  networkAudioFile.flush();
   networkAudioFile.close();
 
   /*
@@ -1253,15 +1260,13 @@ void handleAudioEnd(
       networkAudioPcmBytes
     );
 
-  const bool headerFlushed =
-    file.flush();
-
+  /*
+   * File::flush() 返回 void。
+   */
+  file.flush();
   file.close();
 
-  if (
-    !headerOk ||
-    !headerFlushed
-  ) {
+  if (!headerOk) {
     const String currentStreamId =
       networkAudioStreamId;
 
@@ -1505,6 +1510,635 @@ void setExpressionByName(
     strcmp(expression, "sad") == 0
   ) {
     avatar.setExpression(
+            Expression::Sad
+    );
+  } else if (
+    strcmp(expression, "angry") == 0
+  ) {
+    avatar.setExpression(
+      Expression::Angry
+    );
+  } else if (
+    strcmp(expression, "doubt") == 0
+  ) {
+    avatar.setExpression(
+      Expression::Doubt
+    );
+  } else if (
+    strcmp(expression, "sleepy") == 0
+  ) {
+    avatar.setExpression(
+      Expression::Sleepy
+    );
+  } else {
+    avatar.setExpression(
+      Expression::Neutral
+    );
+  }
+}
+
+
+void setFaceEffectByName(
+  const char* effect
+) {
+  if (effect == nullptr) {
+    return;
+  }
+
+  /*
+   * 远程新指令覆盖临时摇晃表情。
+   */
+  shakeDizzyActive = false;
+  shakeDizzyUntilMs = 0;
+
+  if (strcmp(effect, "none") == 0) {
+    faceEffectState.set(
+      FaceEffect::None
+    );
+  } else if (
+    strcmp(effect, "heart_eyes") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::HeartEyes
+    );
+  } else if (
+    strcmp(effect, "sparkle_eyes") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::SparkleEyes
+    );
+  } else if (
+    strcmp(effect, "dizzy_eyes") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::DizzyEyes
+    );
+  } else if (
+    strcmp(effect, "tear_eyes") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::TearEyes
+    );
+  } else if (
+    strcmp(effect, "surprised_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::SurprisedFace
+    );
+  } else if (
+    strcmp(effect, "pout_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::PoutFace
+    );
+  } else if (
+    strcmp(effect, "shy_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::ShyFace
+    );
+  } else if (
+    strcmp(effect, "smug_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::SmugFace
+    );
+  } else if (
+    strcmp(effect, "confused_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::ConfusedFace
+    );
+  } else if (
+    strcmp(effect, "laugh_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::LaughFace
+    );
+  } else if (
+    strcmp(effect, "kiss_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::KissFace
+    );
+  } else if (
+    strcmp(effect, "nervous_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::NervousFace
+    );
+  } else if (
+    strcmp(effect, "relieved_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::RelievedFace
+    );
+  } else if (
+    strcmp(effect, "determined_face") == 0
+  ) {
+    faceEffectState.set(
+      FaceEffect::DeterminedFace
+    );
+  } else {
+    faceEffectState.set(
+      FaceEffect::None
+    );
+
+    Serial.printf(
+      "[FACE] Unknown effect: %s\n",
+      effect
+    );
+
+    return;
+  }
+
+  Serial.printf(
+    "[FACE] Effect: %s\n",
+    effect
+  );
+}
+
+
+void startShakeDizzyEffect() {
+  const unsigned long now = millis();
+
+  if (shakeDizzyActive) {
+    shakeDizzyUntilMs =
+      now + SHAKE_DIZZY_DURATION_MS;
+
+    return;
+  }
+
+  shakePreviousFaceEffect =
+    faceEffectState.get();
+
+  shakeDizzyActive = true;
+
+  shakeDizzyUntilMs =
+    now + SHAKE_DIZZY_DURATION_MS;
+
+  faceEffectState.set(
+    FaceEffect::DizzyEyes
+  );
+
+  Serial.println(
+    "[FACE] Shake dizzy effect started"
+  );
+}
+
+
+void updateShakeDizzyEffect() {
+  if (!shakeDizzyActive) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  if (
+    static_cast<long>(
+      now - shakeDizzyUntilMs
+    ) < 0
+  ) {
+    return;
+  }
+
+  faceEffectState.set(
+    shakePreviousFaceEffect
+  );
+
+  shakeDizzyActive = false;
+  shakeDizzyUntilMs = 0;
+
+  Serial.println(
+    "[FACE] Shake dizzy effect restored"
+  );
+}
+
+
+/*
+ * ============================================================
+ * 屏幕文字
+ * ============================================================
+ */
+
+void setSpeechTextForDuration(
+  const char* text,
+  unsigned long durationMs
+) {
+  if (text == nullptr) {
+    return;
+  }
+
+  activeSpeechText = text;
+
+  avatar.setSpeechText(
+    activeSpeechText.c_str()
+  );
+
+  if (activeSpeechText.length() == 0) {
+    speechClearScheduled = false;
+    speechClearAtMs = 0;
+
+    Serial.println(
+      "[DISPLAY] Speech text cleared"
+    );
+
+    return;
+  }
+
+  durationMs =
+    clampDisplayDuration(durationMs);
+
+  speechClearAtMs =
+    millis() + durationMs;
+
+  speechClearScheduled = true;
+
+  Serial.printf(
+    "[DISPLAY] Text set: \"%s\", %lu ms\n",
+    activeSpeechText.c_str(),
+    durationMs
+  );
+}
+
+
+void updateSpeechText() {
+  if (!speechClearScheduled) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  if (
+    static_cast<long>(
+      now - speechClearAtMs
+    ) < 0
+  ) {
+    return;
+  }
+
+  avatar.setSpeechText("");
+
+  activeSpeechText = "";
+  speechClearScheduled = false;
+  speechClearAtMs = 0;
+
+  Serial.println(
+    "[DISPLAY] Speech text auto-cleared"
+  );
+}
+
+
+/*
+ * ============================================================
+ * 舵机动作
+ * ============================================================
+ */
+
+void cancelGesture() {
+  activeGesture = GESTURE_NONE;
+  gestureStep = 0;
+  nextGestureStepMs = 0;
+}
+
+
+void startGesture(
+  GestureKind gesture,
+  const char* name
+) {
+  if (
+    gesture == GESTURE_NONE ||
+    name == nullptr
+  ) {
+    return;
+  }
+
+  if (activeGesture != GESTURE_NONE) {
+    Serial.printf(
+      "[GESTURE] Ignored %s: another gesture active\n",
+      name
+    );
+
+    return;
+  }
+
+  activeGesture = gesture;
+  gestureStep = 0;
+  nextGestureStepMs = 0;
+
+  Serial.printf(
+    "[GESTURE] %s started\n",
+    name
+  );
+}
+
+
+void startNod() {
+  startGesture(
+    GESTURE_NOD,
+    "nod"
+  );
+}
+
+
+void startShakeHead() {
+  startGesture(
+    GESTURE_SHAKE_HEAD,
+    "shake_head"
+  );
+}
+
+
+void startLookLeft() {
+  startGesture(
+    GESTURE_LOOK_LEFT,
+    "look_left"
+  );
+}
+
+
+void startLookRight() {
+  startGesture(
+    GESTURE_LOOK_RIGHT,
+    "look_right"
+  );
+}
+
+
+void startTiltUp() {
+  startGesture(
+    GESTURE_TILT_UP,
+    "tilt_up"
+  );
+}
+
+
+void updateGesture() {
+  if (activeGesture == GESTURE_NONE) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  if (
+    nextGestureStepMs != 0 &&
+    static_cast<long>(
+      now - nextGestureStepMs
+    ) < 0
+  ) {
+    return;
+  }
+
+  switch (activeGesture) {
+    case GESTURE_NOD:
+      switch (gestureStep) {
+        case 0:
+          M5StackChan.Motion.moveY(
+            300,
+            500
+          );
+
+          nextGestureStepMs =
+            now + 350;
+
+          break;
+
+        case 1:
+          M5StackChan.Motion.moveY(
+            50,
+            600
+          );
+
+          nextGestureStepMs =
+            now + 350;
+
+          break;
+
+        case 2:
+          M5StackChan.Motion.moveY(
+            300,
+            500
+          );
+
+          nextGestureStepMs =
+            now + 350;
+
+          break;
+
+        case 3:
+          M5StackChan.Motion.goHome(
+            500
+          );
+
+          cancelGesture();
+          return;
+
+        default:
+          cancelGesture();
+          return;
+      }
+
+      gestureStep++;
+      return;
+
+
+    case GESTURE_SHAKE_HEAD:
+      switch (gestureStep) {
+        case 0:
+          M5StackChan.Motion.moveX(
+            -300,
+            500
+          );
+
+          nextGestureStepMs =
+            now + 550;
+
+          break;
+
+        case 1:
+          M5StackChan.Motion.moveX(
+            300,
+            500
+          );
+
+          nextGestureStepMs =
+            now + 550;
+
+          break;
+
+        case 2:
+          M5StackChan.Motion.moveX(
+            -300,
+            500
+          );
+
+          nextGestureStepMs =
+            now + 550;
+
+          break;
+
+        case 3:
+          M5StackChan.Motion.goHome(
+            600
+          );
+
+          cancelGesture();
+          return;
+
+        default:
+          cancelGesture();
+          return;
+      }
+
+      gestureStep++;
+      return;
+
+
+    case GESTURE_LOOK_LEFT:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveX(
+          -300,
+          600
+        );
+
+        nextGestureStepMs =
+          now + 900;
+
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(
+          600
+        );
+
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_LOOK_RIGHT:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveX(
+          300,
+          600
+        );
+
+        nextGestureStepMs =
+          now + 900;
+
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(
+          600
+        );
+
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_TILT_UP:
+      if (gestureStep == 0) {
+        M5StackChan.Motion.moveY(
+          -250,
+          600
+        );
+
+        nextGestureStepMs =
+          now + 900;
+
+        gestureStep++;
+      } else {
+        M5StackChan.Motion.goHome(
+          600
+        );
+
+        cancelGesture();
+      }
+
+      return;
+
+
+    case GESTURE_NONE:
+    default:
+      cancelGesture();
+      return;
+  }
+}
+
+
+/*
+ * ============================================================
+ * 屏幕触摸事件
+ * ============================================================
+ */
+
+void sendTouchTapEvent(
+  int32_t x,
+  int32_t y
+) {
+  if (!webSocket.isConnected()) {
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+
+  doc["type"] = "touch_tap";
+  doc["x"] = x;
+  doc["y"] = y;
+
+  String output;
+  serializeJson(doc, output);
+
+  webSocket.sendTXT(output);
+
+  Serial.printf(
+    "[TOUCH] Screen tap: x=%ld, y=%ld\n",
+    static_cast<long>(x),
+    static_cast<long>(y)
+  );
+}
+
+
+void sendHeadTouchEvent() {
+  if (!webSocket.isConnected()) {
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+
+  doc["type"] = "head_touch";
+
+  String output;
+  serializeJson(doc, output);
+
+  webSocket.sendTXT(output);
+
+  Serial.println(
+    "[TOUCH] Head touch"
+  );
+}
+
+
+void sendShakeEvent() {
+  if (!webSocket.isConnected()) {
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+
+  doc["type"] = "shake";
+
+  String output;
+  serializeJson(doc, output);
+
+  webSocket.sendTXT(output);
+
+  Serial.println(
+    "[IMU] Shake detected"
+  );
+}
       Expression::Sad
     );
   } else if (
@@ -2505,7 +3139,6 @@ LedTheme getLedTheme() {
         120,
         3800
       };
-
     case Expression::Angry:
       return {
         255,
@@ -3401,3 +4034,5 @@ void loop() {
 
   delay(10);
 }
+
+
