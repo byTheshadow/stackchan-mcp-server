@@ -323,7 +323,11 @@ async function sendPcmChunk(chunk) {
     `[audio] sending PCM chunk: ${chunk.length} bytes`
   );
 
-  robotSocket.send(chunk);
+  robotSocket.send(chunk, {
+  binary: true,
+  compress: false
+});
+
   bytesSent += chunk.length;
 
   const bytesWritten = await waitForEvent(
