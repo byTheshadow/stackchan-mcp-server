@@ -344,6 +344,9 @@ async function playRobotAudioInner(
   let response = null;
   let downloadController = null;
 
+  let audioTaskCancelled = false;
+  let ffmpegExpectedToStop = false;
+
   try {
     /*
      * 下载音频。
@@ -389,6 +392,65 @@ async function playRobotAudioInner(
       'pipe:1'
     ]);
 
+    let ffmpegInputClosed = false;
+    let ffmpegOutputClosed = false;
+
+    ffmpeg.stdin.on('error', (error) => {
+      /*
+       * ffmpeg 被主动 kill 后，stdin 可能产生 EPIPE。
+       * 必须监听 error，否则 Node 进程会直接崩溃。
+       */
+      if (
+        error.code === 'EPIPE' ||
+        error.code === 'ERR_STREAM_DESTROYED'
+      ) {
+        if (!ffmpegExpectedToStop) {
+          console.warn(
+            '[audio] ffmpeg stdin closed:',
+            error.code
+          );
+        }
+
+        return;
+      }
+
+      console.error(
+        '[audio] ffmpeg stdin error:',
+        error
+      );
+    });
+
+    ffmpeg.stdin.on('close', () => {
+      ffmpegInputClosed = true;
+    });
+
+    ffmpeg.stdout.on('error', (error) => {
+      if (!ffmpegExpectedToStop) {
+        console.error(
+          '[audio] ffmpeg stdout error:',
+          error
+        );
+      }
+    });
+
+    ffmpeg.stdout.on('close', () => {
+      ffmpegOutputClosed = true;
+    });
+
+    ffmpeg.stderr.on('error', (error) => {
+      console.warn(
+        '[audio] ffmpeg stderr error:',
+        error.message
+      );
+    });
+
+    ffmpeg.on('error', (error) => {
+      console.error(
+        '[audio] ffmpeg process error:',
+        error
+      );
+    });
+
     let ffmpegStderr = '';
 
     ffmpeg.stderr.on('data', (chunk) => {
@@ -426,13 +488,35 @@ async function playRobotAudioInner(
       `[audio] audio_ready received: ${streamId}`
     );
 
+    let audioTaskCancelled = false;
+
     /*
      * HTTP body -> ffmpeg stdin。
      */
     const feedFfmpegStdin = (async () => {
       try {
         for await (const chunk of response.body) {
-          if (!ffmpeg.stdin.write(chunk)) {
+          /*
+           * 如果 PCM 发送失败、ACK 超时或机器人中止，
+           * 立即停止继续向 ffmpeg 写入。
+           */
+          if (audioTaskCancelled) {
+            break;
+          }
+
+          if (
+            !ffmpeg ||
+            ffmpeg.killed ||
+            ffmpeg.stdin.destroyed ||
+            ffmpeg.stdin.writableEnded
+          ) {
+            break;
+          }
+
+          const canContinue =
+            ffmpeg.stdin.write(chunk);
+
+          if (!canContinue) {
             await once(
               ffmpeg.stdin,
               'drain'
@@ -440,13 +524,22 @@ async function playRobotAudioInner(
           }
         }
       } catch (error) {
-        if (!ffmpeg.stdin.destroyed) {
-          ffmpeg.stdin.destroy(error);
+        /*
+         * 任务已经被取消时，EPIPE 属于正常清理过程，
+         * 不要再次抛出，避免产生未处理 Promise。
+         */
+        if (
+          audioTaskCancelled ||
+          error.code === 'EPIPE' ||
+          error.code === 'ERR_STREAM_DESTROYED'
+        ) {
+          return;
         }
 
         throw error;
       } finally {
         if (
+          ffmpeg &&
           !ffmpeg.stdin.destroyed &&
           !ffmpeg.stdin.writableEnded
         ) {
@@ -463,9 +556,12 @@ async function playRobotAudioInner(
         robotSocket
       );
 
-      if (!isSocketOpen(robotSocket)) {
+      if (
+        audioTaskCancelled ||
+        !isSocketOpen(robotSocket)
+      ) {
         throw new Error(
-          'robot_socket_closed_during_send'
+          'audio_task_cancelled_or_socket_closed'
         );
       }
 
@@ -476,10 +572,9 @@ async function playRobotAudioInner(
       );
 
       robotSocket.send(chunk, {
-  binary: true,
-  compress: false
-});
-
+        binary: true,
+        compress: false
+      });
 
       bytesSent += chunk.length;
 
@@ -504,6 +599,8 @@ async function playRobotAudioInner(
       'audio_abort',
       Infinity
     ).then((reason) => {
+      audioTaskCancelled = true;
+
       throw new Error(
         `robot_aborted_stream:${reason}`
       );
@@ -514,6 +611,10 @@ async function playRobotAudioInner(
      */
     const streamPcm = (async () => {
       for await (const pcmChunk of ffmpeg.stdout) {
+        if (audioTaskCancelled) {
+          break;
+        }
+
         leftover = Buffer.concat([
           leftover,
           pcmChunk
@@ -522,6 +623,10 @@ async function playRobotAudioInner(
         while (
           leftover.length >= CHUNK_SIZE
         ) {
+          if (audioTaskCancelled) {
+            return;
+          }
+
           const chunk = leftover.subarray(
             0,
             CHUNK_SIZE
@@ -533,6 +638,10 @@ async function playRobotAudioInner(
 
           await sendPcmChunk(chunk);
         }
+      }
+
+      if (audioTaskCancelled) {
+        return;
       }
 
       /*
@@ -554,13 +663,45 @@ async function playRobotAudioInner(
       }
     })();
 
-    await Promise.race([
-      Promise.all([
+    try {
+      await Promise.race([
+        Promise.all([
+          feedFfmpegStdin,
+          streamPcm
+        ]),
+        abortWatcher
+      ]);
+    } catch (error) {
+      audioTaskCancelled = true;
+      throw error;
+    } finally {
+      /*
+       * 如果 race 因为 ACK 超时或 audio_abort 结束，
+       * 另一个后台任务仍可能没有结束。
+       * 必须等待它们收尾，避免后台 Promise 产生未处理异常。
+       */
+      audioTaskCancelled = true;
+
+      if (
+        downloadController &&
+        !downloadController.signal.aborted
+      ) {
+        downloadController.abort();
+      }
+
+      if (
+        ffmpeg &&
+        !ffmpeg.killed
+      ) {
+        ffmpegExpectedToStop = true;
+        ffmpeg.kill('SIGKILL');
+      }
+
+      await Promise.allSettled([
         feedFfmpegStdin,
         streamPcm
-      ]),
-      abortWatcher
-    ]);
+      ]);
+    }
 
     const [exitCode] =
       await ffmpegExitPromise;
@@ -582,6 +723,8 @@ async function playRobotAudioInner(
       `${bytesSent} PCM bytes sent`
     );
   } catch (error) {
+    audioTaskCancelled = true;
+
     console.error(
       `[audio] stream ${streamId} failed:`,
       error.message
@@ -594,7 +737,11 @@ async function playRobotAudioInner(
       downloadController.abort();
     }
 
-    if (ffmpeg && !ffmpeg.killed) {
+    if (
+      ffmpeg &&
+      !ffmpeg.killed
+    ) {
+      ffmpegExpectedToStop = true;
       ffmpeg.kill('SIGKILL');
     }
 
