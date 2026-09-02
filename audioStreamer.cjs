@@ -96,21 +96,19 @@ function waitForEvent(
 ) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let timer = null;
 
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      emitter.removeListener(eventName, onEvent);
-
-      reject(
-        new Error(
-          `timeout_waiting_for_${eventName}`
-        )
+    function cleanup() {
+      emitter.removeListener(
+        eventName,
+        onEvent
       );
-    }, timeoutMs);
+
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
 
     function onEvent(payload) {
       if (settled) {
@@ -118,13 +116,40 @@ function waitForEvent(
       }
 
       settled = true;
-      clearTimeout(timer);
+      cleanup();
       resolve(payload);
     }
 
     emitter.once(eventName, onEvent);
+
+    /*
+     * Infinity 或 undefined 表示永不超时。
+     *
+     * 不要使用 Number.MAX_SAFE_INTEGER，
+     * Node.js 的 setTimeout 不支持这么大的延迟。
+     */
+    if (
+      timeoutMs !== undefined &&
+      timeoutMs !== Infinity
+    ) {
+      timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        cleanup();
+
+        reject(
+          new Error(
+            `timeout_waiting_for_${eventName}`
+          )
+        );
+      }, timeoutMs);
+    }
   });
 }
+
 
 function sendJson(robotSocket, payload) {
   if (
@@ -304,16 +329,16 @@ async function playRobotAudio(
         CHUNK_ACK_TIMEOUT_MS
       );
     }
+const abortWatcher = waitForEvent(
+  emitter,
+  'audio_abort',
+  Infinity
+).then((reason) => {
+  throw new Error(
+    `robot_aborted_stream:${reason}`
+  );
+});
 
-    const abortWatcher = waitForEvent(
-      emitter,
-      'audio_abort',
-      Number.MAX_SAFE_INTEGER
-    ).then((reason) => {
-      throw new Error(
-        `robot_aborted_stream:${reason}`
-      );
-    });
 
     const streamPcm = (async () => {
       for await (const pcmChunk of ffmpeg.stdout) {
