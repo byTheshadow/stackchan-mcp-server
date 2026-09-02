@@ -1090,6 +1090,12 @@ app.post('/mcp/call', async (req, res) => {
     tool,
     arguments: args = {}
   } = req.body ?? {};
+  console.log(
+  `[mcp-call] ${new Date().toISOString()} ` +
+  `tool=${tool} ` +
+  `audio_url=${args?.audio_url || ''}`
+);
+
 
   if (
     tool !== 'control_robot' &&

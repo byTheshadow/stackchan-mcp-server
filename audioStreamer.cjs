@@ -20,12 +20,46 @@ const BITS_PER_SAMPLE = 16;
 const CHUNK_SIZE = 4096;
 
 const DOWNLOAD_TIMEOUT_MS = 15000;
-const CHUNK_ACK_TIMEOUT_MS = 5000;
-const AUDIO_READY_TIMEOUT_MS = 5000;
+const CHUNK_ACK_TIMEOUT_MS = 10000;
+const AUDIO_READY_TIMEOUT_MS = 10000;
 const MAX_BUFFERED_AMOUNT_BYTES = 256 * 1024;
 
 const activeStreamsByRobot = new Map();
+const robotAudioQueues = new Map();
 
+console.log('[audio] ffmpeg path:', ffmpegPath);
+
+/**
+ * 为同一机器人串行执行音频任务。
+ *
+ * 注意：
+ * stopRobotAudio 不使用这个队列，
+ * 因为停止操作必须能够立即打断当前任务。
+ */
+function withRobotAudioLock(robotId, task) {
+  const previous =
+    robotAudioQueues.get(robotId) ||
+    Promise.resolve();
+
+  const next = previous.then(
+    task,
+    task
+  );
+
+  const tracked = next
+    .catch(() => {})
+    .finally(() => {
+      if (
+        robotAudioQueues.get(robotId) === tracked
+      ) {
+        robotAudioQueues.delete(robotId);
+      }
+    });
+
+  robotAudioQueues.set(robotId, tracked);
+
+  return next;
+}
 
 function makeStreamId() {
   return (
@@ -36,8 +70,19 @@ function makeStreamId() {
   );
 }
 
+function isSocketOpen(robotSocket) {
+  return (
+    robotSocket &&
+    robotSocket.readyState === OPEN_STATE
+  );
+}
+
+/**
+ * 由 index.js 的 WebSocket message 处理函数调用。
+ */
 function attachAudioProtocolHandlers(robotId, msg) {
-  const state = activeStreamsByRobot.get(robotId);
+  const state =
+    activeStreamsByRobot.get(robotId);
 
   if (
     !state ||
@@ -54,10 +99,26 @@ function attachAudioProtocolHandlers(robotId, msg) {
   }
 
   if (msg.type === 'audio_chunk_ack') {
-    state.emitter.emit(
-      'audio_chunk_ack',
+    const bytesWritten = Number(
       msg.bytes_written
     );
+
+    if (
+      !Number.isFinite(bytesWritten) ||
+      bytesWritten < 0
+    ) {
+      console.warn(
+        '[audio] invalid audio_chunk_ack:',
+        msg
+      );
+      return;
+    }
+
+    state.emitter.emit(
+      'audio_chunk_ack',
+      bytesWritten
+    );
+
     return;
   }
 
@@ -78,10 +139,7 @@ async function waitForSendBufferDrain(robotSocket) {
       setTimeout(resolve, 20);
     });
 
-    if (
-      !robotSocket ||
-      robotSocket.readyState !== OPEN_STATE
-    ) {
+    if (!isSocketOpen(robotSocket)) {
       throw new Error(
         'robot_socket_closed_during_send'
       );
@@ -123,10 +181,9 @@ function waitForEvent(
     emitter.once(eventName, onEvent);
 
     /*
-     * Infinity 或 undefined 表示永不超时。
-     *
-     * 不要使用 Number.MAX_SAFE_INTEGER，
-     * Node.js 的 setTimeout 不支持这么大的延迟。
+     * Infinity 表示不设置超时。
+     * 不能使用 Number.MAX_SAFE_INTEGER，
+     * 因为它超过 Node.js setTimeout 的有效范围。
      */
     if (
       timeoutMs !== undefined &&
@@ -150,29 +207,103 @@ function waitForEvent(
   });
 }
 
-
 function sendJson(robotSocket, payload) {
-  if (
-    !robotSocket ||
-    robotSocket.readyState !== OPEN_STATE
-  ) {
+  if (!isSocketOpen(robotSocket)) {
     throw new Error(
       'robot_socket_closed_during_send'
     );
   }
 
-  robotSocket.send(JSON.stringify(payload));
+  robotSocket.send(
+    JSON.stringify(payload)
+  );
 }
 
-async function playRobotAudio(
+/**
+ * 立即中断当前音频。
+ *
+ * 此函数不加队列锁，确保 stop 操作可以
+ * 立即唤醒正在等待 audio_ready 或 ACK 的播放任务。
+ */
+async function stopRobotAudioNow(
+  robotSocket,
+  robotId,
+  reason = 'stopped_by_tool_call'
+) {
+  const state =
+    activeStreamsByRobot.get(robotId);
+
+  if (!state) {
+    return;
+  }
+
+  console.log(
+    `[audio] stopping stream ${state.streamId}: ${reason}`
+  );
+
+  if (isSocketOpen(robotSocket)) {
+    try {
+      robotSocket.send(
+        JSON.stringify({
+          type: 'audio_stop',
+          stream_id: state.streamId
+        })
+      );
+    } catch (error) {
+      console.warn(
+        '[audio] failed to send audio_stop:',
+        error.message
+      );
+    }
+  }
+
+  /*
+   * 先通知等待者，再删除状态。
+   */
+  state.emitter.emit(
+    'audio_abort',
+    reason
+  );
+
+  if (
+    activeStreamsByRobot.get(robotId) === state
+  ) {
+    activeStreamsByRobot.delete(robotId);
+  }
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, 50);
+  });
+}
+
+/**
+ * 对外停止接口。
+ *
+ * 停止必须立即执行，不能等待播放队列。
+ */
+async function stopRobotAudio(
+  robotSocket,
+  robotId,
+  reason = 'stopped_by_tool_call'
+) {
+  return stopRobotAudioNow(
+    robotSocket,
+    robotId,
+    reason
+  );
+}
+
+/**
+ * 实际播放逻辑。
+ *
+ * 该函数只能由加锁后的 playRobotAudio 调用。
+ */
+async function playRobotAudioInner(
   robotSocket,
   robotId,
   audioUrl
 ) {
-  if (
-    !robotSocket ||
-    robotSocket.readyState !== OPEN_STATE
-  ) {
+  if (!isSocketOpen(robotSocket)) {
     throw new Error('robot_not_connected');
   }
 
@@ -183,7 +314,12 @@ async function playRobotAudio(
     throw new Error('invalid_audio_url');
   }
 
-  await stopRobotAudio(
+  /*
+   * 如果存在旧流，立即停止。
+   * 由于当前函数已经在队列中执行，
+   * 不会与另一个 playRobotAudio 并发。
+   */
+  await stopRobotAudioNow(
     robotSocket,
     robotId,
     'interrupted_by_new_audio'
@@ -199,7 +335,10 @@ async function playRobotAudio(
     emitter
   };
 
-  activeStreamsByRobot.set(robotId, state);
+  activeStreamsByRobot.set(
+    robotId,
+    state
+  );
 
   let ffmpeg = null;
   let response = null;
@@ -209,7 +348,8 @@ async function playRobotAudio(
     /*
      * 下载音频。
      */
-    downloadController = new AbortController();
+    downloadController =
+      new AbortController();
 
     const downloadTimer = setTimeout(() => {
       downloadController.abort();
@@ -230,10 +370,9 @@ async function playRobotAudio(
     }
 
     /*
-     * ffmpeg：输入任意音频，输出 16kHz、单声道、
-     * signed 16-bit little-endian PCM。
+     * 启动 ffmpeg。
      */
-   ffmpeg = spawn(ffmpegPath, [
+    ffmpeg = spawn(ffmpegPath, [
       '-hide_banner',
       '-loglevel',
       'error',
@@ -262,7 +401,7 @@ async function playRobotAudio(
     );
 
     /*
-     * 告知固件音频格式。
+     * 告知机器人音频开始。
      */
     sendJson(robotSocket, {
       type: 'audio_start',
@@ -273,10 +412,18 @@ async function playRobotAudio(
       bits_per_sample: BITS_PER_SAMPLE
     });
 
+    console.log(
+      `[audio] audio_start sent: ${streamId}`
+    );
+
     await waitForEvent(
       emitter,
       'audio_ready',
       AUDIO_READY_TIMEOUT_MS
+    );
+
+    console.log(
+      `[audio] audio_ready received: ${streamId}`
     );
 
     /*
@@ -286,7 +433,10 @@ async function playRobotAudio(
       try {
         for await (const chunk of response.body) {
           if (!ffmpeg.stdin.write(chunk)) {
-            await once(ffmpeg.stdin, 'drain');
+            await once(
+              ffmpeg.stdin,
+              'drain'
+            );
           }
         }
       } catch (error) {
@@ -307,51 +457,56 @@ async function playRobotAudio(
 
     let leftover = Buffer.alloc(0);
     let bytesSent = 0;
-async function sendPcmChunk(chunk) {
-  await waitForSendBufferDrain(robotSocket);
 
-  if (
-    !robotSocket ||
-    robotSocket.readyState !== OPEN_STATE
-  ) {
-    throw new Error(
-      'robot_socket_closed_during_send'
-    );
-  }
+    async function sendPcmChunk(chunk) {
+      await waitForSendBufferDrain(
+        robotSocket
+      );
 
-  console.log(
-    `[audio] sending PCM chunk: ${chunk.length} bytes`
-  );
+      if (!isSocketOpen(robotSocket)) {
+        throw new Error(
+          'robot_socket_closed_during_send'
+        );
+      }
 
-  robotSocket.send(chunk, {
-  binary: true,
-  compress: false
-});
+      console.log(
+        `[audio] sending PCM chunk: ` +
+        `${chunk.length} bytes, ` +
+        `stream_id=${streamId}`
+      );
 
-  bytesSent += chunk.length;
+      robotSocket.send(chunk);
+      bytesSent += chunk.length;
 
-  const bytesWritten = await waitForEvent(
-    emitter,
-    'audio_chunk_ack',
-    CHUNK_ACK_TIMEOUT_MS
-  );
+      const ackBytes = await waitForEvent(
+        emitter,
+        'audio_chunk_ack',
+        CHUNK_ACK_TIMEOUT_MS
+      );
 
-  console.log(
-    `[audio] received PCM ACK: ${bytesWritten} bytes`
-  );
-}
+      console.log(
+        `[audio] received PCM ACK: ` +
+        `${ackBytes} bytes, ` +
+        `stream_id=${streamId}`
+      );
+    }
 
-const abortWatcher = waitForEvent(
-  emitter,
-  'audio_abort',
-  Infinity
-).then((reason) => {
-  throw new Error(
-    `robot_aborted_stream:${reason}`
-  );
-});
+    /*
+     * 监听机器人主动中止。
+     */
+    const abortWatcher = waitForEvent(
+      emitter,
+      'audio_abort',
+      Infinity
+    ).then((reason) => {
+      throw new Error(
+        `robot_aborted_stream:${reason}`
+      );
+    });
 
-
+    /*
+     * PCM 分块发送。
+     */
     const streamPcm = (async () => {
       for await (const pcmChunk of ffmpeg.stdout) {
         leftover = Buffer.concat([
@@ -359,20 +514,24 @@ const abortWatcher = waitForEvent(
           pcmChunk
         ]);
 
-        while (leftover.length >= CHUNK_SIZE) {
+        while (
+          leftover.length >= CHUNK_SIZE
+        ) {
           const chunk = leftover.subarray(
             0,
             CHUNK_SIZE
           );
 
-          leftover = leftover.subarray(CHUNK_SIZE);
+          leftover = leftover.subarray(
+            CHUNK_SIZE
+          );
 
           await sendPcmChunk(chunk);
         }
       }
 
       /*
-       * PCM sample 为 16-bit，尾部必须保持偶数字节。
+       * 发送尾部，保持 16-bit PCM 偶数字节。
        */
       if (leftover.length > 0) {
         const usableLength =
@@ -381,7 +540,10 @@ const abortWatcher = waitForEvent(
 
         if (usableLength > 0) {
           await sendPcmChunk(
-            leftover.subarray(0, usableLength)
+            leftover.subarray(
+              0,
+              usableLength
+            )
           );
         }
       }
@@ -395,7 +557,8 @@ const abortWatcher = waitForEvent(
       abortWatcher
     ]);
 
-    const [exitCode] = await ffmpegExitPromise;
+    const [exitCode] =
+      await ffmpegExitPromise;
 
     if (exitCode !== 0) {
       throw new Error(
@@ -430,9 +593,14 @@ const abortWatcher = waitForEvent(
       ffmpeg.kill('SIGKILL');
     }
 
+    /*
+     * 只有当前状态仍然属于本流时，
+     * 才发送 audio_stop。
+     */
     if (
-      robotSocket &&
-      robotSocket.readyState === OPEN_STATE
+      activeStreamsByRobot.get(robotId) ===
+      state &&
+      isSocketOpen(robotSocket)
     ) {
       try {
         robotSocket.send(
@@ -442,57 +610,40 @@ const abortWatcher = waitForEvent(
           })
         );
       } catch {
-        // WebSocket 可能正在关闭，忽略发送失败。
+        // WebSocket 正在关闭时忽略错误。
       }
     }
 
     throw error;
   } finally {
     if (
-      activeStreamsByRobot.get(robotId) === state
+      activeStreamsByRobot.get(robotId) ===
+      state
     ) {
       activeStreamsByRobot.delete(robotId);
     }
   }
 }
 
-async function stopRobotAudio(
+/**
+ * 对外播放接口。
+ *
+ * 同一机器人上的多个播放请求会串行执行。
+ */
+async function playRobotAudio(
   robotSocket,
   robotId,
-  reason = 'stopped_by_tool_call'
+  audioUrl
 ) {
-  const state = activeStreamsByRobot.get(robotId);
-
-  if (!state) {
-    return;
-  }
-
-  if (
-    robotSocket &&
-    robotSocket.readyState === OPEN_STATE
-  ) {
-    try {
-      robotSocket.send(
-        JSON.stringify({
-          type: 'audio_stop',
-          stream_id: state.streamId
-        })
-      );
-    } catch {
-      // WebSocket 关闭时忽略发送失败。
-    }
-  }
-
-  state.emitter.emit(
-    'audio_abort',
-    reason
+  return withRobotAudioLock(
+    robotId,
+    () =>
+      playRobotAudioInner(
+        robotSocket,
+        robotId,
+        audioUrl
+      )
   );
-
-  activeStreamsByRobot.delete(robotId);
-
-  await new Promise((resolve) => {
-    setTimeout(resolve, 50);
-  });
 }
 
 module.exports = {
