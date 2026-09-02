@@ -323,213 +323,80 @@ function normalizeDisplayDuration(value) {
   );
 }
 
-const controlRobotTool = {
-  name: 'control_robot',
+// 1. 定义允许的参数枚举常量（防止 ReferenceError）
+const allowedExpressions = [
+  'happy',
+  'sad',
+  'angry',
+  'doubt',
+  'sleepy',
+  'neutral'
+];
 
-  description:
-    '控制 StackChan 实体身体的当前状态与互动反馈。可单独或组合设置基础表情、脸部强化效果、简短屏幕文字、舵机动作和短提示音。所有参数均为可选。当前主动动作支持 nod、shake_head、look_left、look_right、tilt_up、home 和 none。',
+const allowedFaceEffects = [
+  'none',
+  'heart_eyes',
+  'sparkle_eyes',
+  'dizzy_eyes',
+  'tear_eyes',
+  'surprised_face',
+  'pout_face',
+  'shy_face',
+  'smug_face',
+  'confused_face',
+  'laugh_face',
+  'kiss_face',
+  'nervous_face',
+  'relieved_face',
+  'determined_face'
+];
 
-  inputSchema: {
-    type: 'object',
+const allowedMotions = [
+  'nod',
+  'shake_head',
+  'look_left',
+  'look_right',
+  'tilt_up',
+  'home',
+  'none'
+];
 
-    properties: {
-      expression: {
-        type: 'string',
-        enum: [
-          'happy',
-          'sad',
-          'angry',
-          'doubt',
-          'sleepy',
-          'neutral'
-        ],
-        description:
-          '可选。基础图形表情，同时决定实体灯光的基础主题色和呼吸节奏。'
-      },
+const allowedSounds = [
+  'none',
+  'message',
+  'emotion'
+];
 
-      face_effect: {
-        type: 'string',
-        enum: [
-          'none',
-          'heart_eyes',
-          'sparkle_eyes',
-          'dizzy_eyes',
-          'tear_eyes',
-          'surprised_face',
-          'pout_face',
-          'shy_face',
-          'smug_face',
-          'confused_face',
-          'laugh_face',
-          'kiss_face',
-          'nervous_face',
-          'relieved_face',
-          'determined_face'
-        ],
-        description:
-          '可选的强化脸部效果。'
-      },
-
-      motion: {
-        type: 'string',
-        enum: [
-          'nod',
-          'shake_head',
-          'look_left',
-          'look_right',
-          'tilt_up',
-          'home',
-          'none'
-        ],
-        description:
-          '可选的一次性舵机动作。'
-      },
-
-      text_to_display: {
-        type: 'string',
-        maxLength: 80,
-        description:
-          '可选。显示在实体屏幕上的文字，最多 80 个字符。'
-      },
-
-      text: {
-        type: 'string',
-        maxLength: 80,
-        description:
-          '可选。text_to_display 的别名，显示在屏幕上的文字。'
-      },
-
-      display_duration_ms: {
-        type: 'integer',
-        minimum: 1000,
-        maximum: 10000,
-        description:
-          '可选。屏幕文字的显示时长，单位为毫秒（默认 5000）。'
-      },
-
-      text_to_speak: {
-        type: 'string',
-        description:
-          '为未来 TTS 预留，目前会被安全忽略。'
-      },
-
-      sound: {
-        type: 'string',
-        enum: [
-          'none',
-          'message',
-          'emotion'
-        ],
-        description:
-          '可选。播放 SD 卡中已验证的短 WAV 提示音。'
-      }
-    },
-
-    required: []
-  }
-};
-
-
-const getRobotEventsTool = {
-  name: 'get_robot_events',
-
-  description:
-    '读取 StackChan 实体身体尚未处理的近期互动事件。当前支持 touch_tap、head_touch 和 shake。读取不会删除事件；处理完成后应调用 acknowledge_robot_events 确认。',
-
-  inputSchema: {
-    type: 'object',
-    properties: {}
-  }
-};
-
-const acknowledgeRobotEventsTool = {
-  name: 'acknowledge_robot_events',
-
-  description:
-    '确认角色已处理的 StackChan 实体事件。确认后事件会从待处理队列删除。',
-
-  inputSchema: {
-    type: 'object',
-
-    properties: {
-      event_ids: {
-        type: 'array',
-        items: {
-          type: 'string'
-        },
-        minItems: 1,
-        maxItems: 50,
-        description:
-          '要确认并删除的事件 ID 列表。'
-      }
-    },
-
-    required: [
-      'event_ids'
-    ]
-  }
-};
-
-const playRobotAudioTool = {
-  name: 'play_robot_audio',
-
-  description:
-    '播放指定 HTTP 或 HTTPS 音频 URL。服务端会自动使用 ffmpeg 转换为 16kHz、单声道、16-bit PCM，并通过 WebSocket 流式发送给 StackChan。新的播放请求会自动打断当前音频。',
-
-  inputSchema: {
-    type: 'object',
-
-    properties: {
-      audio_url: {
-        type: 'string',
-        format: 'uri',
-        description:
-          '服务端可以访问的 HTTP 或 HTTPS 音频地址。'
-      }
-    },
-
-    required: [
-      'audio_url'
-    ]
-  }
-};
-
-const stopRobotAudioTool = {
-  name: 'stop_robot_audio',
-
-  description:
-    '立即停止 StackChan 当前正在接收或播放的网络音频。',
-
-  inputSchema: {
-    type: 'object',
-    properties: {}
-  }
-};
-
+// 2. 参数标准化函数
 function normalizeRobotArguments(args = {}) {
   const normalized = {};
 
-  // 1. 处理表情（有传才更新）
+  // 1) 处理表情
   if (args.expression && allowedExpressions.includes(args.expression)) {
     normalized.expression = args.expression;
   }
 
-  // 2. 处理脸部特效（有传才更新）
+  // 2) 处理脸部特效
   if (args.face_effect && allowedFaceEffects.includes(args.face_effect)) {
     normalized.face_effect = args.face_effect;
   }
 
-  // 3. 处理舵机动作（有传才触发）
+  // 3) 处理舵机动作
   if (args.motion && allowedMotions.includes(args.motion)) {
     normalized.motion = args.motion;
   }
 
-  // 4. 处理提示音（有传才播放）
+  // 4) 处理提示音
   if (args.sound && allowedSounds.includes(args.sound)) {
     normalized.sound = args.sound;
   }
 
-  // 5. 处理文字（同时兼容 text_to_display、text、message、content）
+  // 5) 处理音量（0 ~ 255）
+  if (typeof args.volume === 'number') {
+    normalized.volume = Math.max(0, Math.min(255, Math.floor(args.volume)));
+  }
+
+  // 6) 处理文字（同时兼容 text_to_display、text、message、content）
   const rawText =
     args.text_to_display ??
     args.text ??
