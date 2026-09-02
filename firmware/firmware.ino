@@ -659,31 +659,98 @@ bool beginAudioStream(
 /*
  * 接收一帧二进制 PCM 数据并追加写入临时文件。
  */
-void writeAudioStreamChunk(const uint8_t* data, size_t length) {
-  if (audioStreamState != AUDIO_STREAM_RECEIVING) {
+
+void writeAudioStreamChunk(
+  const uint8_t* data,
+  size_t length
+) {
+  Serial.printf(
+    "[AUDIO-STREAM] Binary frame received: %u bytes\n",
+    static_cast<unsigned>(length)
+  );
+
+  if (
+    audioStreamState != AUDIO_STREAM_RECEIVING
+  ) {
     Serial.println(
-      "[AUDIO-STREAM] Binary frame ignored: no active stream"
+      "[AUDIO-STREAM] Binary frame ignored: "
+      "no active stream"
     );
     return;
   }
 
-  if (data == nullptr || length == 0) {
+  if (
+    data == nullptr ||
+    length == 0
+  ) {
+    Serial.println(
+      "[AUDIO-STREAM] Empty binary frame ignored"
+    );
     return;
   }
 
-  const size_t written = audioStreamFile.write(data, length);
+  if (!audioStreamFile) {
+    Serial.println(
+      "[AUDIO-STREAM] Audio file is not open"
+    );
 
-  if (written != length) {
-    Serial.println("[AUDIO-STREAM] SD write failed, aborting stream");
-    sendAudioAbortEvent(audioStreamId, "sd_write_failed");
+    sendAudioAbortEvent(
+      audioStreamId,
+      "audio_file_not_open"
+    );
+
     abortAudioStream();
     return;
   }
 
-  audioStreamBytesWritten += static_cast<uint32_t>(written);
+  const size_t written =
+    audioStreamFile.write(data, length);
 
-  sendAudioChunkAckEvent(audioStreamId, audioStreamBytesWritten);
+  Serial.printf(
+    "[AUDIO-STREAM] SD write result: %u/%u bytes\n",
+    static_cast<unsigned>(written),
+    static_cast<unsigned>(length)
+  );
+
+  if (written != length) {
+    Serial.println(
+      "[AUDIO-STREAM] SD write failed, "
+      "aborting stream"
+    );
+
+    sendAudioAbortEvent(
+      audioStreamId,
+      "sd_write_failed"
+    );
+
+    abortAudioStream();
+    return;
+  }
+
+  audioStreamBytesWritten +=
+    static_cast<uint32_t>(written);
+
+  /*
+   * bytes_written 这里发送累计写入字节数。
+   * 当前 Render 端只使用 ACK 事件进行流控，
+   * 不依赖该字段的具体数值。
+   */
+  sendAudioChunkAckEvent(
+    audioStreamId,
+    audioStreamBytesWritten
+  );
+
+  Serial.printf(
+    "[AUDIO-STREAM] ACK sent: stream_id=%s, "
+    "chunk=%u, total=%lu\n",
+    audioStreamId.c_str(),
+    static_cast<unsigned>(written),
+    static_cast<unsigned long>(
+      audioStreamBytesWritten
+    )
+  );
 }
+
 
 
 /*
@@ -821,22 +888,49 @@ void sendAudioReadyEvent(const String& streamId) {
 /*
  * 通过 WebSocket 确认已写入的累计字节数（用于 Render 端流控）。
  */
-void sendAudioChunkAckEvent(const String& streamId, uint32_t bytesWritten) {
+ void sendAudioChunkAckEvent(
+  const String& streamId,
+  uint32_t bytesWritten
+) {
   if (!webSocket.isConnected()) {
+    Serial.println(
+      "[AUDIO-STREAM] Cannot send ACK: "
+      "WebSocket is disconnected"
+    );
     return;
   }
 
-  StaticJsonDocument<160> doc;
+  StaticJsonDocument<192> doc;
 
-  doc["type"] = "audio_chunk_ack";
-  doc["stream_id"] = streamId;
-  doc["bytes_written"] = bytesWritten;
+  doc["type"] =
+    "audio_chunk_ack";
+
+  doc["stream_id"] =
+    streamId;
+
+  doc["bytes_written"] =
+    bytesWritten;
 
   String json;
   serializeJson(doc, json);
 
-  webSocket.sendTXT(json);
+  Serial.printf(
+    "[AUDIO-STREAM] Sending ACK: %s\n",
+    json.c_str()
+  );
+
+  const bool sent =
+    webSocket.sendTXT(
+      json.c_str(),
+      json.length()
+    );
+
+  Serial.printf(
+    "[AUDIO-STREAM] ACK send result: %s\n",
+    sent ? "success" : "failed"
+  );
 }
+
 
 
 /*
@@ -1671,14 +1765,23 @@ void webSocketEvent(
       Serial.println("[WS] WebSocket error");
       break;
 
+case WStype_BIN: {
+  Serial.printf(
+    "[WS] Binary frame callback: %u bytes\n",
+    static_cast<unsigned>(length)
+  );
 
-    case WStype_BIN: {
-      /*
-       * 二进制帧只用于流式 PCM 音频数据。
-       */
-      writeAudioStreamChunk(payload, length);
-      break;
-    }
+  /*
+   * 二进制帧只用于流式 PCM 音频数据。
+   */
+  writeAudioStreamChunk(
+    payload,
+    length
+  );
+
+  break;
+}
+
 
 
     case WStype_TEXT: {
