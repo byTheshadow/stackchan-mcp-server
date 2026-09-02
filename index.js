@@ -14,27 +14,27 @@ const wss = new WebSocketServer({ server });
 /*
  * 当前在线的机器人连接。
  *
- * 目前仅支持一台机器人；
- * 未来可通过 robot_id 扩展多台。
+ * 目前仅支持一台机器人。
  */
 let robotSocket = null;
 
+
 /*
- * 实体身体上报的待处理事件。
+ * 实体机器人待处理事件队列。
  *
- * 这是短期中继队列，不是角色记忆库：
- * - 最多 50 条；
+ * - 最多保存 50 条；
  * - 24 小时后过期；
- * - Render 重启后会清空；
- * - 角色处理完成后应调用 acknowledge_robot_events 确认。
+ * - Render 重启后清空；
+ * - 处理完成后通过 acknowledge_robot_events 删除。
  */
 const pendingRobotEvents = [];
 
 const MAX_PENDING_EVENTS = 50;
 const EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 
+
 /*
- * 清理超过保存期限的实体事件。
+ * 删除过期实体事件。
  */
 function pruneExpiredRobotEvents() {
   const now = Date.now();
@@ -56,8 +56,9 @@ function pruneExpiredRobotEvents() {
   }
 }
 
+
 /*
- * 生成实体事件 ID。
+ * 创建实体事件 ID。
  */
 function makeRobotEventId() {
   return `evt_${Date.now().toString(36)}_${Math.random()
@@ -65,8 +66,9 @@ function makeRobotEventId() {
     .slice(2, 8)}`;
 }
 
+
 /*
- * 添加机器人实体事件到待处理队列。
+ * 添加机器人实体事件。
  */
 function addRobotEvent(rawEvent) {
   pruneExpiredRobotEvents();
@@ -92,8 +94,9 @@ function addRobotEvent(rawEvent) {
   return event;
 }
 
+
 /*
- * 获取当前未处理的实体事件。
+ * 获取尚未处理的实体事件。
  */
 function getPendingRobotEvents() {
   pruneExpiredRobotEvents();
@@ -113,8 +116,9 @@ function getPendingRobotEvents() {
   });
 }
 
+
 /*
- * 确认并删除指定的实体事件。
+ * 确认并删除实体事件。
  */
 function acknowledgeRobotEvents(eventIds) {
   pruneExpiredRobotEvents();
@@ -136,14 +140,18 @@ function acknowledgeRobotEvents(eventIds) {
   return acknowledged;
 }
 
+
 /*
- * StackChan 实体设备 WebSocket 连接。
+ * 机器人 WebSocket 连接。
  */
 wss.on('connection', (ws, req) => {
   console.log(
     `✅ StackChan 机器人已连接：${req.socket.remoteAddress}`
   );
 
+  /*
+   * 当前只支持一台机器人。
+   */
   robotSocket = ws;
 
   ws.on('message', (message) => {
@@ -157,15 +165,13 @@ wss.on('connection', (ws, req) => {
       data = JSON.parse(text);
     } catch {
       /*
-       * 机器人偶尔发送的非 JSON 调试内容仅记录日志，
-       * 不作为事件处理。
+       * 非 JSON 调试内容只记录，不写入事件队列。
        */
       return;
     }
 
     /*
-     * 只接受经过明确验证的实体事件，
-     * 避免任意内容写入事件队列。
+     * 屏幕触摸事件。
      */
     const isScreenTouchEvent =
       data &&
@@ -175,6 +181,9 @@ wss.on('connection', (ws, req) => {
       Number.isInteger(data.y) &&
       Number.isFinite(data.at_ms);
 
+    /*
+     * 头顶触摸事件。
+     */
     const isHeadTouchEvent =
       data &&
       data.type === 'robot_event' &&
@@ -182,10 +191,10 @@ wss.on('connection', (ws, req) => {
       Number.isFinite(data.at_ms);
 
     /*
-     * shake 表示用户摇晃了实体机器人。
+     * 用户摇晃事件。
      *
-     * 该事件由固件 IMU 检测后上报，
-     * 不表示机器人主动执行 shake_head 舵机动作。
+     * shake 只表示用户摇晃了机器人，
+     * 不是机器人主动执行的舵机动作。
      */
     const isShakeEvent =
       data &&
@@ -218,6 +227,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+
 /*
  * JSON-RPC 成功响应。
  */
@@ -228,6 +238,7 @@ function jsonRpcSuccess(id, result) {
     result
   };
 }
+
 
 /*
  * JSON-RPC 错误响应。
@@ -249,26 +260,23 @@ function jsonRpcError(id, code, message, data) {
   };
 }
 
+
 /*
- * 清理显示文字。
+ * 清理屏幕显示文字。
  */
 function sanitizeDisplayText(value) {
   if (typeof value !== 'string') {
     return '';
   }
 
-  /*
-   * 去除可能破坏 JSON 或显示的控制字符。
-   * 保留中文及 Unicode。
-   * 最多 80 个字符。
-   */
   return value
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
     .slice(0, 80);
 }
 
+
 /*
- * 标准化显示时长。
+ * 限制屏幕文字显示时长。
  */
 function normalizeDisplayDuration(value) {
   const defaultDurationMs = 5000;
@@ -285,14 +293,15 @@ function normalizeDisplayDuration(value) {
   );
 }
 
+
 /*
- * MCP：控制机器人实体身体。
+ * control_robot 工具定义。
  */
 const controlRobotTool = {
   name: 'control_robot',
 
   description:
-    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证的保守舵机动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。请让实体反馈服务于当前语境，不要为每一句普通对话都播放声音、执行动作或显示文字。仅可使用参数枚举中明确提供的值。当前支持 nod、shake_head、look_left、look_right、tilt_up、tilt_down、home 和 none；不支持任意角度、自定义动作序列、跳舞、TTS、录音或自定义灯光命令。注意：shake 是用户摇晃实体后由 IMU 上报的事件，不是机器人主动动作，不能通过本工具触发。',
+    '控制 StackChan 实体身体的当前状态与一次性互动反馈。可设置基础表情、可选脸部效果、简短屏幕文字、已验证的保守舵机动作和短提示音。每次调用都会更新 expression 与 face_effect；未传或无效的 face_effect 会恢复为 none。请让实体反馈服务于当前语境，不要为每一句普通对话都播放声音、执行动作或显示文字。当前主动动作支持 nod、shake_head、look_left、look_right、tilt_up、home 和 none。tilt_down 不支持。shake 是用户摇晃实体后由 IMU 上报的事件，不是机器人主动动作，不能通过本工具触发。不支持任意角度、自定义动作序列、跳舞、TTS、录音或自定义灯光命令。',
 
   inputSchema: {
     type: 'object',
@@ -336,7 +345,7 @@ const controlRobotTool = {
         ],
 
         description:
-          '可选的强化脸部效果，不等同于基础情绪。none=原生眼睛、嘴巴和眉毛，也是通常默认选择；heart_eyes=喜爱、感动；sparkle_eyes=期待、赞叹；dizzy_eyes=眩晕、信息过载；tear_eyes=难过、感动落泪；surprised_face=明显惊讶；pout_face=轻微不满、撒娇；shy_face=害羞；smug_face=得意、俏皮；confused_face=困惑；laugh_face=大笑；kiss_face=飞吻、亲昵回应；nervous_face=紧张、尴尬；relieved_face=松一口气、安心；determined_face=认真、下定决心。通常使用 none；只在语境明确需要强调时才选其他效果，避免长期停留在夸张表情。'
+          '可选的强化脸部效果。none=原生眼睛、嘴巴和眉毛；heart_eyes=喜爱、感动；sparkle_eyes=期待、赞叹；dizzy_eyes=眩晕、信息过载；tear_eyes=难过、感动落泪；surprised_face=明显惊讶；pout_face=轻微不满、撒娇；shy_face=害羞；smug_face=得意、俏皮；confused_face=困惑；laugh_face=大笑；kiss_face=飞吻、亲昵回应；nervous_face=紧张、尴尬；relieved_face=安心；determined_face=认真、下定决心。'
       },
 
       motion: {
@@ -348,13 +357,12 @@ const controlRobotTool = {
           'look_left',
           'look_right',
           'tilt_up',
-          'tilt_down',
           'home',
           'none'
         ],
 
         description:
-          '可选的一次性舵机动作。nod=点头一次；shake_head=小幅左右摇头；look_left/look_right=小幅向左或向右看；tilt_up/tilt_down=小幅抬头或低头；home=立即回到正中；none=不执行动作。动作会产生机械运动和声音，不要在每句话或短时间内重复触发。当前动作均为保守测试动作，不支持任意角度或自定义动作序列。'
+          '可选的一次性舵机动作。nod=点头一次；shake_head=小幅左右摇头；look_left/look_right=小幅向左或向右看；tilt_up=小幅抬头；home=立即回到正中；none=不执行动作。动作会产生机械运动和声音，不要在每句话或短时间内重复触发。当前动作均为保守测试动作，不支持 tilt_down、任意角度或自定义动作序列。'
       },
 
       text_to_display: {
@@ -362,7 +370,7 @@ const controlRobotTool = {
         maxLength: 80,
 
         description:
-          '可选。显示在实体屏幕上的极简短文字或 ASCII 颜文字，最多 80 个字符。适合问候、感谢、关键情绪反馈或短提示，不应用来逐字复述长回复。推荐优先使用短英文、数字、ASCII 颜文字；中文实际显示效果取决于固件字体。示例："^_^ Hi!"、"Yay! \\o/"、"Hmm... o_O"、"Thank you! <3"、"Sorry... T_T"、"Good night... z_z"。传入空字符串会清除当前文字。'
+          '可选。显示在实体屏幕上的极简短文字或 ASCII 颜文字，最多 80 个字符。传入空字符串会清除当前文字。'
       },
 
       display_duration_ms: {
@@ -371,14 +379,14 @@ const controlRobotTool = {
         maximum: 10000,
 
         description:
-          '可选。text_to_display 的显示时长，单位毫秒；范围 1000～10000，默认 5000。仅在传入 text_to_display 时生效。'
+          '可选。text_to_display 的显示时长，单位毫秒；范围 1000～10000，默认 5000。'
       },
 
       text_to_speak: {
         type: 'string',
 
         description:
-          '为未来 TTS 预留。目前机器人没有接入 TTS，此字段会被安全忽略；若需要实体文字反馈，请使用 text_to_display。'
+          '为未来 TTS 预留。目前机器人没有接入 TTS，此字段会被安全忽略。'
       },
 
       sound: {
@@ -391,7 +399,7 @@ const controlRobotTool = {
         ],
 
         description:
-          '可选。播放 SD 卡中已验证的短 WAV 提示音。message=收到重要消息或需要吸引注意时的提示；emotion=明显情绪回应、庆祝或安慰时的提示；none=不播放。声音会打断环境安静感，不要对每条回复播放，也不要连续重复播放。'
+          '可选。播放 SD 卡中已验证的短 WAV 提示音。message=重要消息或需要吸引注意；emotion=明显情绪回应、庆祝或安慰；none=不播放。'
       }
     },
 
@@ -401,14 +409,15 @@ const controlRobotTool = {
   }
 };
 
+
 /*
- * MCP：读取实体事件。
+ * get_robot_events 工具定义。
  */
 const getRobotEventsTool = {
   name: 'get_robot_events',
 
   description:
-    '读取 StackChan 实体身体尚未处理的近期互动事件。当前支持 touch_tap（用户触摸屏幕）、head_touch（用户摸头顶）和 shake（用户摇晃实体机器人）。head_touch 在实体端会先执行粉色柔和双闪；shake 只表示 IMU 检测到用户摇晃，不会自动触发舵机动作。每条事件提供 received_at、seconds_ago，以及屏幕触摸事件的 x、y 坐标。读取不会删除事件；角色结合语境处理后，应调用 acknowledge_robot_events 确认，避免重复提及。',
+    '读取 StackChan 实体身体尚未处理的近期互动事件。当前支持 touch_tap（用户触摸屏幕）、head_touch（用户摸头顶）和 shake（用户摇晃实体机器人）。head_touch 在实体端会执行粉色柔和双闪；shake 只表示 IMU 检测到用户摇晃，不会自动触发舵机动作。读取不会删除事件；角色结合语境处理后，应调用 acknowledge_robot_events 确认，避免重复提及。',
 
   inputSchema: {
     type: 'object',
@@ -416,8 +425,9 @@ const getRobotEventsTool = {
   }
 };
 
+
 /*
- * MCP：确认实体事件。
+ * acknowledge_robot_events 工具定义。
  */
 const acknowledgeRobotEventsTool = {
   name: 'acknowledge_robot_events',
@@ -450,10 +460,9 @@ const acknowledgeRobotEventsTool = {
   }
 };
 
+
 /*
- * 标准化并限制机器人控制参数。
- *
- * 不能直接将任意调用参数转发给固件。
+ * 标准化机器人控制参数。
  */
 function normalizeRobotArguments(args = {}) {
   const allowedExpressions = [
@@ -483,13 +492,16 @@ function normalizeRobotArguments(args = {}) {
     'determined_face'
   ];
 
+  /*
+   * 注意：这里没有 tilt_down，
+   * 也没有 shake。
+   */
   const allowedMotions = [
     'nod',
     'shake_head',
     'look_left',
     'look_right',
     'tilt_up',
-    'tilt_down',
     'home',
     'none'
   ];
@@ -505,12 +517,6 @@ function normalizeRobotArguments(args = {}) {
       ? args.expression
       : 'neutral',
 
-    /*
-     * 默认使用 none。
-     *
-     * 即使旧调用没有传 face_effect，
-     * 也会恢复原生眼睛，而不会意外保留旧状态。
-     */
     face_effect: allowedFaceEffects.includes(args.face_effect)
       ? args.face_effect
       : 'none',
@@ -525,24 +531,26 @@ function normalizeRobotArguments(args = {}) {
   };
 
   /*
-   * 只有调用方明确传入 text_to_display 时才发送文字字段，
-   * 以保证旧调用不会清除当前屏幕文字。
+   * 只有明确传入文字时才发送 text_to_display，
+   * 避免旧调用清除当前文字。
    */
   if (typeof args.text_to_display === 'string') {
     normalized.text_to_display = sanitizeDisplayText(
       args.text_to_display
     );
 
-    normalized.display_duration_ms = normalizeDisplayDuration(
-      args.display_duration_ms
-    );
+    normalized.display_duration_ms =
+      normalizeDisplayDuration(
+        args.display_duration_ms
+      );
   }
 
   return normalized;
 }
 
+
 /*
- * 向在线机器人发送控制指令。
+ * 向机器人发送控制指令。
  */
 function sendRobotControl(args = {}) {
   const payload = {
@@ -572,8 +580,9 @@ function sendRobotControl(args = {}) {
   };
 }
 
+
 /*
- * 将实体事件转换为给模型阅读的文字。
+ * 格式化实体事件。
  */
 function formatRobotEventsText(events) {
   if (events.length === 0) {
@@ -599,11 +608,9 @@ function formatRobotEventsText(events) {
   return `尚未处理的实体事件：\n${lines.join('\n')}`;
 }
 
+
 /*
- * 标准 MCP Streamable HTTP 入口。
- *
- * 示例：
- * https://你的-render域名.onrender.com/mcp
+ * MCP Streamable HTTP 入口。
  */
 app.post('/mcp', (req, res) => {
   const request = req.body;
@@ -645,11 +652,11 @@ app.post('/mcp', (req, res) => {
 
       serverInfo: {
         name: 'stackchan-robot-relay',
-        version: '1.4.0'
+        version: '1.5.0'
       },
 
       instructions:
-        '此服务负责 StackChan 实体身体的上下行中继。当前可控制基础表情、可选脸部效果、短屏幕文字、nod、shake_head、look_left、look_right、tilt_up、tilt_down、home 和两种短提示音；也可读取并确认 touch_tap、head_touch、shake 实体事件。shake 表示用户摇晃了机器人后由 IMU 上报，并非机器人主动舵机动作。灯光由固件依据表情和本地互动自动控制。当前不支持跳舞、任意角度动作、自定义动作序列、TTS、麦克风或音频上传。'
+        '此服务负责 StackChan 实体身体的上下行中继。当前可控制基础表情、脸部效果、短屏幕文字、nod、shake_head、look_left、look_right、tilt_up、home 和两种短提示音；也可读取并确认 touch_tap、head_touch、shake 实体事件。shake 表示用户摇晃机器人后由 IMU 上报，并非机器人主动舵机动作。tilt_down 不支持。用户摇晃时，固件会暂时显示 dizzy_eyes，约 2.2 秒后恢复摇晃前的脸部效果。'
     };
 
     return res
@@ -790,9 +797,8 @@ app.post('/mcp', (req, res) => {
           );
       }
 
-      const acknowledged = acknowledgeRobotEvents(
-        eventIds
-      );
+      const acknowledged =
+        acknowledgeRobotEvents(eventIds);
 
       return res
         .status(200)
@@ -843,8 +849,9 @@ app.post('/mcp', (req, res) => {
     );
 });
 
+
 /*
- * GET /mcp 不支持，只接受 POST JSON-RPC。
+ * GET /mcp 不支持。
  */
 app.get('/mcp', (req, res) => {
   res
@@ -856,6 +863,7 @@ app.get('/mcp', (req, res) => {
     );
 });
 
+
 /*
  * 健康检查。
  */
@@ -865,8 +873,9 @@ app.get('/', (req, res) => {
     .send('StackChan relay server is running.');
 });
 
+
 /*
- * 旧版工具说明接口，保留兼容性。
+ * 旧版工具说明接口。
  */
 app.get('/mcp/tools', (req, res) => {
   res.json({
@@ -878,8 +887,9 @@ app.get('/mcp/tools', (req, res) => {
   });
 });
 
+
 /*
- * 旧版自定义控制接口，继续保留兼容性。
+ * 旧版控制接口。
  */
 app.post('/mcp/call', (req, res) => {
   const {
@@ -934,18 +944,16 @@ app.post('/mcp/call', (req, res) => {
   });
 });
 
+
 /*
- * 临时实体事件调试接口。
- *
- * PWA 或模型正式集成时应优先使用 MCP 工具：
- * - get_robot_events
- * - acknowledge_robot_events
+ * 调试用实体事件接口。
  */
 app.get('/robot/events', (req, res) => {
   res.json({
     events: getPendingRobotEvents()
   });
 });
+
 
 app.post('/robot/events/ack', (req, res) => {
   const eventIds = req.body?.event_ids;
@@ -963,14 +971,14 @@ app.post('/robot/events/ack', (req, res) => {
       });
   }
 
-  const acknowledged = acknowledgeRobotEvents(
-    eventIds
-  );
+  const acknowledged =
+    acknowledgeRobotEvents(eventIds);
 
   return res.json({
     acknowledged
   });
 });
+
 
 const PORT = process.env.PORT || 3000;
 

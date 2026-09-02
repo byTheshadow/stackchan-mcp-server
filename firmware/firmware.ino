@@ -139,7 +139,6 @@ enum GestureKind {
   GESTURE_LOOK_LEFT,
   GESTURE_LOOK_RIGHT,
   GESTURE_TILT_UP,
-  GESTURE_TILT_DOWN
 };
 
 GestureKind activeGesture = GESTURE_NONE;
@@ -196,6 +195,23 @@ static constexpr unsigned long SHAKE_DEBOUNCE_MS = 1800;
  * 该阈值用于第一版测试。
  */
 static constexpr float SHAKE_DELTA_THRESHOLD = 1.20f;
+
+/*
+ * 用户摇晃时的临时晕眩表情。
+ *
+ * 只覆盖 face_effect，不改变基础 expression。
+ * 到时间后恢复摇晃前的 face_effect。
+ */
+bool shakeDizzyActive = false;
+
+FaceEffect shakePreviousFaceEffect =
+  FaceEffect::None;
+
+unsigned long shakeDizzyUntilMs = 0;
+
+static constexpr unsigned long
+  SHAKE_DIZZY_DURATION_MS = 2200;
+
 
 
 /*
@@ -501,10 +517,20 @@ void setExpressionByName(const char* expr) {
 /*
  * 设置自定义脸部效果。
  */
-void setFaceEffectByName(const char* effect) {
+ void setFaceEffectByName(const char* effect) {
   if (effect == nullptr) {
     return;
   }
+
+  /*
+   * 如果角色在晕眩期间主动设置了新的 face_effect，
+   * 以角色的新指令为准。
+   *
+   * 这样不会在远程新表情设置后，
+   * 又被旧的 shake 状态恢复覆盖。
+   */
+  shakeDizzyActive = false;
+  shakeDizzyUntilMs = 0;
 
   if (strcmp(effect, "none") == 0) {
     faceEffectState.set(FaceEffect::None);
@@ -562,9 +588,70 @@ void setFaceEffectByName(const char* effect) {
     return;
   }
 
-  Serial.printf("[FACE] Effect: %s\n", effect);
+  Serial.printf(
+    "[FACE] Effect: %s\n",
+    effect
+  );
 }
 
+void startShakeDizzyEffect() {
+  const unsigned long now = millis();
+
+  /*
+   * 连续摇晃时不保存当前的 dizzy_eyes，
+   * 只延长晕眩时间。
+   */
+  if (shakeDizzyActive) {
+    shakeDizzyUntilMs =
+      now + SHAKE_DIZZY_DURATION_MS;
+
+    Serial.println(
+      "[FACE] Shake detected again; "
+      "dizzy effect extended"
+    );
+
+    return;
+  }
+
+  shakePreviousFaceEffect =
+    faceEffectState.get();
+
+  shakeDizzyActive = true;
+
+  shakeDizzyUntilMs =
+    now + SHAKE_DIZZY_DURATION_MS;
+
+  faceEffectState.set(FaceEffect::DizzyEyes);
+
+  Serial.println(
+    "[FACE] Shake feedback: dizzy_eyes started"
+  );
+}
+
+
+void updateShakeDizzyEffect() {
+  if (!shakeDizzyActive) {
+    return;
+  }
+
+  const unsigned long now = millis();
+
+  if (
+    static_cast<long>(now - shakeDizzyUntilMs) < 0
+  ) {
+    return;
+  }
+
+  faceEffectState.set(shakePreviousFaceEffect);
+
+  shakeDizzyActive = false;
+  shakeDizzyUntilMs = 0;
+
+  Serial.println(
+    "[FACE] Shake feedback: "
+    "previous face effect restored"
+  );
+}
 
 /*
  * 限制屏幕文字显示时间。
@@ -713,13 +800,6 @@ void startTiltUp() {
 }
 
 
-/*
- * 启动低头。
- */
-void startTiltDown() {
-  startGesture(GESTURE_TILT_DOWN, "tilt_down");
-}
-
 
 /*
  * 更新舵机动作。
@@ -859,19 +939,7 @@ void updateGesture() {
       return;
 
 
-    case GESTURE_TILT_DOWN:
-      if (gestureStep == 0) {
-        M5StackChan.Motion.moveY(0, 600);
-        Serial.println("[GESTURE] Tilt-down: Y=0");
-        nextGestureStepMs = now + 900;
-        gestureStep++;
-      } else {
-        M5StackChan.Motion.goHome(600);
-        Serial.println("[GESTURE] Tilt-down complete");
-        cancelGesture();
-      }
-
-      return;
+   
 
 
     case GESTURE_NONE:
@@ -1036,20 +1104,24 @@ void updateShakeDetection() {
   ) {
     lastShakeEventMs = now;
 
-    Serial.printf(
-      "[IMU] SHAKE detected, delta=%.3f "
-      "ax=%.3f ay=%.3f az=%.3f\n",
-      deltaMagnitude,
-      ax,
-      ay,
-      az
-    );
+   Serial.printf(
+  "[IMU] SHAKE detected, delta=%.3f "
+  "ax=%.3f ay=%.3f az=%.3f\n",
+  deltaMagnitude,
+  ax,
+  ay,
+  az
+);
+
+startShakeDizzyEffect();
+sendShakeEvent();
+
 
     /*
      * 用户摇晃只上报事件，
      * 不自动触发舵机动作。
      */
-    sendShakeEvent();
+   
   }
 }
 
@@ -1260,8 +1332,7 @@ void webSocketEvent(
         } else if (strcmp(motion, "tilt_up") == 0) {
           startTiltUp();
 
-        } else if (strcmp(motion, "tilt_down") == 0) {
-          startTiltDown();
+       
 
         } else if (strcmp(motion, "home") == 0) {
           cancelGesture();
@@ -1795,7 +1866,9 @@ void loop() {
   updateSpeechText();
   updateTouchInput();
   updateHeadTouchInput();
+
   updateShakeDetection();
+  updateShakeDizzyEffect();
 
   updateLedBreath();
 
