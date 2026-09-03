@@ -1997,6 +1997,14 @@ case WStype_FRAGMENT_FIN: {
         setSpeechTextForDuration(text, durationMs);
       }
 
+       if (doc["volume"].is<int>()) {
+        int vol = doc["volume"].as<int>();
+        if (vol < 0) vol = 0;
+        if (vol > 255) vol = 255;
+        M5.Speaker.setVolume(vol);
+        Serial.printf("[SPEAKER] Volume updated to: %d\n", vol);
+      }
+
       if (expression != nullptr) {
         Serial.printf(
           "[ACTION] Expression: %s\n",
