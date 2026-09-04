@@ -626,8 +626,10 @@ function isValidHttpUrl(value) {
 const controlRobotTool = {
   name: 'control_robot',
 
-  description:
-    '控制你的 StackChan 实体身体。你可以根据当前对话、情绪和互动语境，自主选择基础图形表情、自定义眼睛效果、简短英文文字和 ASCII 颜文字，并执行已经过实体验证的 nod（点头）或 home（回到正中）。不要使用未提供的动作、表情、自定义效果或声音。',
+  
+   description:
+  '控制你的 StackChan 实体身体。可以根据当前对话、情绪和互动语境，自主选择基础图形表情、自定义脸部效果、简短英文文字和 ASCII 颜文字，并执行已经过实体验证的动作。支持基础表情、扩展脸部效果、shake_head、look_left、look_right、tilt_up、nod 和 home。不要使用未提供的动作、表情、自定义效果或声音。'
+
 
   inputSchema: {
     type: 'object',
@@ -677,14 +679,23 @@ const controlRobotTool = {
       motion: {
         type: 'string',
 
-        enum: [
-          'nod',
-          'home',
-          'none'
-        ],
+       motion: {
+  type: 'string',
 
-        description:
-          '机器人动作：nod 为点头一次且自动回中；home 为立即回到正中；none 为不执行动作。'
+  enum: [
+    'nod',
+    'shake_head',
+    'look_left',
+    'look_right',
+    'tilt_up',
+    'home',
+    'none'
+  ],
+
+  description:
+    '机器人动作：nod 为点头一次且自动回中；shake_head 为摇头；look_left 为看向左侧；look_right 为看向右侧；tilt_up 为抬头；home 为立即回到正中；none 为不执行动作。只能使用提供的枚举值。'
+},
+
       },
 
       text_to_display: {
